@@ -76,7 +76,7 @@ func InitOptions(fs *pflag.FlagSet) *Options {
 		"rate-limiter-max-delay", 60,
 		"Max delay in seconds for the ExponentialFailureRateLimiter")
 	fs.BoolVar(&options.EnableLeaderElection,
-		"leader-elect", true,
+		"leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	fs.StringVar(&options.MetricsAddr,
