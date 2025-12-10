@@ -5,6 +5,7 @@ global:
   registry: harbor.aimotive.com/lali-scheduler
   securityContext: {}
   imagePullSecrets: []
+  leaderElection: true
   gpuSharing: false
   clusterAutoscaling: false
   affinity: {}
@@ -99,6 +100,20 @@ webhookmanager:
       cpu: "250m"
       memory: "128Mi"
 
+admission:
+  name: kai-admission
+  image:
+    name: admission
+    pullPolicy: IfNotPresent
+  certSecretName: admission-webhook-tls-secret
+  ports:
+    webhookPort: 9443
+    metricsPort: 8080
+    probePort: 8081
+  cdi: false
+  gpuPodRuntimeClassName: nvidia
+  affinity: {}
+
 nodescaleadjuster:
   image:
     name: nodescaleadjuster
@@ -132,3 +147,34 @@ crdupgrader:
   image:
     name: crd-upgrader
     pullPolicy: IfNotPresent
+
+defaultQueue:
+  createDefaultQueue: false
+  parentName: default-parent-queue
+  childName: default-queue
+  parentResources:
+    cpu:
+      quota: 0
+      limit: -1
+      overQuotaWeight: 1
+    gpu:
+      quota: 0
+      limit: -1
+      overQuotaWeight: 1
+    memory:
+      quota: 0
+      limit: -1
+      overQuotaWeight: 1
+  childResources:
+    cpu:
+      quota: 0
+      limit: -1
+      overQuotaWeight: 1
+    gpu:
+      quota: 0
+      limit: -1
+      overQuotaWeight: 1
+    memory:
+      quota: 0
+      limit: -1
+      overQuotaWeight: 1
