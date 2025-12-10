@@ -9,9 +9,9 @@ global:
   clusterAutoscaling: false
   affinity: {}
   tolerations:
-  - key: "node-role.kubernetes.io/control-plane"
-    operator: "Exists"
-    effect: "NoSchedule"
+    - key: "node-role.kubernetes.io/control-plane"
+      operator: "Exists"
+      effect: "NoSchedule"
 #  nodeSelector:
 #    node-role.kubernetes.io/control-plane: ""
   namespaceLabelSelector: {}
@@ -20,15 +20,13 @@ global:
     namespace: kai-resource-reservation
     serviceAccount: kai-resource-reservation
     appLabel: kai-resource-reservation
-  leaderElection: true
 
 
 podgrouper:
   image:
     name: podgrouper
     pullPolicy: IfNotPresent
-  additionalArgs:
-  - "--leader-elect=true"
+  additionalArgs: {}
   resources:
     limits:
       cpu: "500m"
@@ -42,8 +40,7 @@ podgroupcontroller:
   image:
     name: podgroupcontroller
     pullPolicy: IfNotPresent
-  additionalArgs:
-  - "--leader-elect=true"
+  additionalArgs: {}
   resources:
     limits:
       cpu: "500m"
@@ -60,8 +57,7 @@ binder:
   resourceReservationImage:
     name: resourcereservation
   certSecretName: binder-webhook-tls-secret
-  additionalArgs:
-  - "--leader-elect=true"
+  additionalArgs: {}
   ports:
     webhookPort: 9443
     metricsPort: 8080
@@ -79,8 +75,7 @@ scheduler:
   image:
     name: scheduler
     pullPolicy: IfNotPresent
-  additionalArgs:
-  - "--leader-elect=true"
+  additionalArgs: {}
   placementStrategy: binpack
   ports:
     metricsPort: 8080
@@ -110,8 +105,7 @@ nodescaleadjuster:
     pullPolicy: IfNotPresent
   scalingPodImage:
     name: scalingpod
-  additionalArgs:
-  - "--leader-elect=true"
+  additionalArgs: {}
   resources:
     limits:
       cpu: "500m"
@@ -124,8 +118,7 @@ queuecontroller:
   image:
     name: queuecontroller
     pullPolicy: IfNotPresent
-  additionalArgs:
-  - "--leader-elect=true"
+  additionalArgs: {}
   certSecretName: queuecontroller-webhook-tls-secret
   resources:
     limits:
