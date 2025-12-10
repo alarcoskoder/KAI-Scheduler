@@ -71,6 +71,7 @@ type ServerOption struct {
 	IsInferencePreemptible            bool
 	MaxNumberConsolidationPreemptees  int
 	DetailedFitErrors                 bool
+	UpdatePodEvictionCondition        bool
 	ScheduleCSIStorage                bool
 	UseSchedulingSignatures           bool
 	FullHierarchyFairness             bool

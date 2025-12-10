@@ -14,7 +14,7 @@ const (
 	DefaultNodePoolName                   = "default"
 	DefaultMetricsNamespace               = "kai"
 	DefaultQueueLabel                     = "kai.scheduler/queue"
-	DefaultSchedulerName                  = "kai-scheduler"
+	DefaultSchedulerName                  = "lali-scheduler"
 	DefaultKAINamespace                   = "kai-scheduler"
 	DefaultResourceReservationName        = "kai-resource-reservation"
 	DefaultScaleAdjustName                = "kai-scale-adjust"
