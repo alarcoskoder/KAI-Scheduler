@@ -5,7 +5,6 @@ global:
   registry: harbor.aimotive.com/lali-scheduler
   securityContext: {}
   imagePullSecrets: []
-  leaderElection: true
   gpuSharing: false
   clusterAutoscaling: false
   affinity: {}
@@ -22,6 +21,7 @@ global:
     namespace: kai-resource-reservation
     serviceAccount: kai-resource-reservation
     appLabel: kai-resource-reservation
+  leaderElection: true
 
 operator:
   image:
@@ -52,6 +52,14 @@ podgroupcontroller:
   image:
     name: podgroupcontroller
     pullPolicy: IfNotPresent
+  additionalArgs: {}
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+    requests:
+      cpu: "250m"
+      memory: "128Mi"
   affinity: {}
 
 binder:
@@ -101,6 +109,15 @@ queuecontroller:
     pullPolicy: IfNotPresent
   certSecretName: queuecontroller-webhook-tls-secret
   affinity: {}
+  scalingPodNamespace: kai-scale-adjust
+  additionalArgs: {}
+  resources:
+    limits:
+          cpu: "500m"
+          memory: "256Mi"
+        requests:
+          cpu: "250m"
+          memory: "128Mi"
 
 admission:
   name: kai-admission
@@ -122,9 +139,15 @@ nodescaleadjuster:
     pullPolicy: IfNotPresent
   scalingPodImage:
     name: scalingpod
-    pullPolicy: IfNotPresent
-  scalingPodNamespace: kai-scale-adjust
-  affinity: {}
+  additionalArgs: {}
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+    requests:
+      cpu: "250m"
+      memory: "128Mi"
+
 
 crdupgrader:
   image:
