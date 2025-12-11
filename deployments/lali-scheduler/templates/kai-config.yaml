@@ -12,7 +12,7 @@ metadata:
 spec:
   namespace: {{ .Release.Namespace }}
   global:
-    schedulerName: "kai-scheduler"
+    schedulerName: "lali-scheduler"
     queueLabelKey: "kai.scheduler/queue"
     nodePoolLabelKey: "kai.scheduler/nodepool"
     {{- if .Values.global.namespaceLabelSelector }}
@@ -49,7 +49,7 @@ spec:
       image:
         name: {{ .Values.binder.image.name }}
         repository: {{ .Values.global.registry }}
-        tag: {{ .Chart.Version }}
+        tag: "{{ .Chart.Version }}"
         pullPolicy: {{ .Values.binder.image.pullPolicy | default .Values.global.imagePullPolicy }}
       {{- if .Values.binder.resources }}
       resources:
@@ -73,7 +73,7 @@ spec:
       image:
         name: {{ .Values.podgroupcontroller.image.name }}
         repository: {{ .Values.global.registry }}
-        tag: {{ .Chart.Version }}
+        tag: "{{ .Chart.Version }}"
         pullPolicy: {{ .Values.podgroupcontroller.image.pullPolicy | default .Values.global.imagePullPolicy }}
       {{- if .Values.podgroupcontroller.resources }}
       resources:
@@ -90,7 +90,7 @@ spec:
       image:
         name: {{ .Values.queuecontroller.image.name }}
         repository: {{ .Values.global.registry }}
-        tag: {{ .Chart.Version }}
+        tag: "{{ .Chart.Version }}"
         pullPolicy: {{ .Values.queuecontroller.image.pullPolicy | default .Values.global.imagePullPolicy }}
       {{- if .Values.queuecontroller.resources }}
       resources:
@@ -107,7 +107,7 @@ spec:
       image:
         name: {{ .Values.admission.image.name }}
         repository: {{ .Values.global.registry }}
-        tag: {{ .Chart.Version }}
+        tag: "{{ .Chart.Version }}"
         pullPolicy: {{ .Values.admission.image.pullPolicy | default .Values.global.imagePullPolicy }}
       {{- if .Values.admission.resources }}
       resources:
@@ -132,7 +132,7 @@ spec:
       image:
         name: {{ .Values.nodescaleadjuster.image.name }}
         repository: {{ .Values.global.registry }}
-        tag: {{ .Chart.Version }}
+        tag: "{{ .Chart.Version }}"
         pullPolicy: {{ .Values.nodescaleadjuster.image.pullPolicy | default .Values.global.imagePullPolicy }}
       {{- if .Values.nodescaleadjuster.resources }}
       resources:
@@ -147,7 +147,7 @@ spec:
       scalingPodImage:
         name: {{ .Values.nodescaleadjuster.scalingPodImage.name }}
         repository: {{ .Values.global.registry }}
-        tag: {{ .Chart.Version }}
+        tag: "{{ .Chart.Version }}"
         pullPolicy: {{ .Values.nodescaleadjuster.scalingPodImage.pullPolicy | default .Values.global.imagePullPolicy }}
 
   scheduler:
@@ -155,7 +155,7 @@ spec:
       image:
         name: {{ .Values.scheduler.image.name }}
         repository: {{ .Values.global.registry }}
-        tag: {{ .Chart.Version }}
+        tag: "{{ .Chart.Version }}"
         pullPolicy: {{ .Values.scheduler.image.pullPolicy | default .Values.global.imagePullPolicy }}
       {{- if .Values.scheduler.resources }}
       resources:
