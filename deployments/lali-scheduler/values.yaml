@@ -113,11 +113,11 @@ queuecontroller:
   additionalArgs: {}
   resources:
     limits:
-          cpu: "500m"
-          memory: "256Mi"
-        requests:
-          cpu: "250m"
-          memory: "128Mi"
+      cpu: "500m"
+      memory: "256Mi"
+    requests:
+      cpu: "250m"
+      memory: "128Mi"
 
 admission:
   name: kai-admission
