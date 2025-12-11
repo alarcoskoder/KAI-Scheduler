@@ -5,6 +5,7 @@ package solvers
 
 import (
 	"golang.org/x/exp/slices"
+	"k8s.io/klog/v2"
 
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/actions/common/solvers/accumulated_scenario_filters"
 	solverscenario "github.com/NVIDIA/KAI-scheduler/pkg/scheduler/actions/common/solvers/scenario"
@@ -15,6 +16,7 @@ import (
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/framework"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/log"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/metrics"
+	scheduler_util "github.com/NVIDIA/KAI-scheduler/pkg/scheduler/scheduler_util"
 )
 
 type PodAccumulatedScenarioBuilder struct {
@@ -79,6 +81,13 @@ func (asb *PodAccumulatedScenarioBuilder) addNextPotentialVictims() bool {
 		nextVictimJob, asb.session.PodSetOrderFn, asb.session.TaskOrderFn,
 	)
 
+	// --- Non-preemptible guard (pod-level) ---
+	potentialVictimTasks = filterNonPreemptibleTasks(potentialVictimTasks)
+	if len(potentialVictimTasks) == 0 && !jobHasMoreTasks {
+		// Nothing usable from this job right now.
+		return true
+	}
+
 	// Jump over recorded victims in potential victims generation
 	for _, potentialVictimTask := range potentialVictimTasks {
 		if _, ok := asb.recordedVictimsTasks[potentialVictimTask.UID]; ok {
@@ -115,6 +124,26 @@ func (asb *PodAccumulatedScenarioBuilder) addNextPotentialVictims() bool {
 		asb.lastScenario.AddPotentialVictimsTasks(potentialVictimTasks)
 	}
 	return true
+}
+
+// Keep only pods that are allowed to be evicted.
+func filterNonPreemptibleTasks(tasks []*pod_info.PodInfo) []*pod_info.PodInfo {
+       if len(tasks) == 0 {
+               return tasks
+       }
+       kept := tasks[:0]
+       for _, t := range tasks {
+               if t == nil || t.Pod == nil {
+                       continue
+               }
+               if scheduler_util.IsNonPreemptible(t.Pod) {
+                       klog.V(4).InfoS("Skipping non-preemptible pod as potential victim",
+                               "pod", klog.KObj(t.Pod), "node", t.NodeName)
+                       continue
+               }
+               kept = append(kept, t)
+       }
+       return kept
 }
 
 func (asb *PodAccumulatedScenarioBuilder) GetValidScenario() *solverscenario.ByNodeScenario {

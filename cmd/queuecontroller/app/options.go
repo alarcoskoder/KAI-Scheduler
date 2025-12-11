@@ -33,7 +33,7 @@ type Options struct {
 func InitOptions(fs *flag.FlagSet) *Options {
 	o := &Options{}
 
-	fs.BoolVar(&o.EnableLeaderElection, "leader-elect", false, "Enable leader election for controller manager. Enabling this will ensure there is only one active controller manager.")
+	fs.BoolVar(&o.EnableLeaderElection, "leader-elect", true, "Enable leader election for controller manager. Enabling this will ensure there is only one active controller manager.")
 	fs.StringVar(&o.SchedulingQueueLabelKey, "queue-label-key", constants.DefaultQueueLabel, "Scheduling queue label key name.")
 	fs.BoolVar(&o.EnableWebhook, "enable-webhook", true, "Enable webhook for controller manager.")
 	fs.BoolVar(&o.SkipControllerNameValidation, "skip-controller-name-validation", false, "Skip controller name validation.")

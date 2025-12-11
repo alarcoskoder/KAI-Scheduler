@@ -8,7 +8,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: kai-binder
+  name: queuecontroller
 rules:
 - apiGroups:
   - coordination.k8s.io
@@ -26,7 +26,6 @@ rules:
   - ""
   resources:
   - configmaps
-  - pods
   verbs:
   - create
   - delete
@@ -36,59 +35,17 @@ rules:
   - update
   - watch
 - apiGroups:
-  - ""
+  - scheduling.run.ai
   resources:
-  - events
-  - pods/binding
-  - pods/finalizers
-  verbs:
-  - create
-  - patch
-  - update
-- apiGroups:
-  - ""
-  resources:
-  - nodes
-  - persistentvolumes
+  - podgroups
   verbs:
   - get
   - list
   - watch
 - apiGroups:
-  - ""
+  - scheduling.run.ai
   resources:
-  - persistentvolumeclaims
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - pods/status
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - resource.k8s.io
-  resources:
-  - deviceclasses
-  - resourceslices
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - resource.k8s.io
-  resources:
-  - resourceclaims
-  - resourceclaims/status
+  - queues
   verbs:
   - get
   - list
@@ -98,39 +55,25 @@ rules:
 - apiGroups:
   - scheduling.run.ai
   resources:
-  - bindrequests
+  - queues/finalizers
   verbs:
+  - update
+- apiGroups:
+  - scheduling.run.ai
+  resources:
+  - queues/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
   - delete
-  - get
-  - list
-  - patch
   - update
-  - watch
-- apiGroups:
-  - scheduling.run.ai
-  resources:
-  - bindrequests/finalizers
-  verbs:
-  - patch
-  - update
-- apiGroups:
-  - scheduling.run.ai
-  resources:
-  - bindrequests/status
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - storage.k8s.io
-  resources:
-  - csidrivers
-  - csinodes
-  - csistoragecapacities
-  - storageclasses
-  verbs:
-  - get
-  - list
-  - watch

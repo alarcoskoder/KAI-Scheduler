@@ -52,7 +52,7 @@ func (o *Options) AddFlags() {
 		"gpu-memory-to-fraction-ratio", consts.DefaultGPUMemoryToFractionRatio,
 		fmt.Sprintf("The ratio of GPU memory to fraction, defaults to %f", consts.DefaultGPUMemoryToFractionRatio))
 	flag.BoolVar(&o.EnableLeaderElection,
-		"leader-elect", false,
+		"leader-elect", true,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.IntVar(&o.Qps, "qps", 50, "Queries per second to the K8s API server")

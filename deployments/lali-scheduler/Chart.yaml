@@ -1,0 +1,9 @@
+# Copyright 2025 aiMotive
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v2
+name: lali-scheduler
+description: LALI Scheduler by aiMotive
+type: application
+version: 0.6
+appVersion: 0.6

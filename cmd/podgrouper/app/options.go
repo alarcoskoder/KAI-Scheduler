@@ -5,9 +5,9 @@ package app
 
 import (
 	"flag"
+	"github.com/NVIDIA/KAI-scheduler/pkg/common/constants"
 	"strings"
 
-	"github.com/NVIDIA/KAI-scheduler/pkg/common/constants"
 	controllers "github.com/NVIDIA/KAI-scheduler/pkg/podgrouper"
 )
 
@@ -32,7 +32,7 @@ type Options struct {
 func (o *Options) AddFlags(fs *flag.FlagSet) {
 	fs.StringVar(&o.MetricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	fs.StringVar(&o.ProbeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	fs.BoolVar(&o.EnableLeaderElection, "leader-elect", false, "Enable leader election for controller manager. Enabling this will ensure there is only one active controller manager.")
+	fs.BoolVar(&o.EnableLeaderElection, "leader-elect", true, "Enable leader election for controller manager. Enabling this will ensure there is only one active controller manager.")
 	fs.StringVar(&o.NodePoolLabelKey, "nodepool-label-key", constants.DefaultNodePoolLabelKey, "The label key for node pools")
 	fs.IntVar(&o.QPS, "qps", 50, "Queries per second to the K8s API server")
 	fs.IntVar(&o.Burst, "burst", 300, "Burst to the K8s API server")

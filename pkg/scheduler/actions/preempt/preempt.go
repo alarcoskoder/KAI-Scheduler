@@ -30,6 +30,7 @@ import (
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/framework"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/log"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/metrics"
+	scheduler_util "github.com/NVIDIA/KAI-scheduler/pkg/scheduler/scheduler_util"
 )
 
 type preemptAction struct {
@@ -141,6 +142,23 @@ func buildFilterFuncForPreempt(ssn *framework.Session, preemptor *podgroup_info.
 		}
 
 		if job.GetActiveAllocatedTasksCount() == 0 {
+			return false
+		}
+
+		// Only consider tasks that are *actually evictable* by the solver:
+		potentialVictimTasks, _ := podgroup_info.GetTasksToEvict(
+			job, ssn.PodSetOrderFn, ssn.TaskOrderFn,
+		)
+		// If all potential victims are protected, skip this job entirely.
+		hasPreemptibleVictim := false
+		for _, t := range potentialVictimTasks {
+			if t != nil && t.Pod != nil && !scheduler_util.IsNonPreemptible(t.Pod) {
+				hasPreemptibleVictim = true
+				break
+			}
+		}
+
+		if !hasPreemptibleVictim {
 			return false
 		}
 

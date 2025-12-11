@@ -2,18 +2,20 @@
 # SPDX-License-Identifier: Apache-2.0
 
 global:
-  registry: registry/local/kai-scheduler
-  tag: ""
-  imagePullPolicy: IfNotPresent
+  registry: harbor.aimotive.com/lali-scheduler
   securityContext: {}
   imagePullSecrets: []
   leaderElection: false
   gpuSharing: false
   clusterAutoscaling: false
-  nodeSelector: {}
   affinity: {}
+  tolerations:
+    - key: "node-role.kubernetes.io/control-plane"
+      operator: "Exists"
+      effect: "NoSchedule"
+#  nodeSelector:
+#    node-role.kubernetes.io/control-plane: ""
   requireDefaultPodAntiAffinityTerm: false
-  tolerations: []
   namespaceLabelSelector: {}
   podLabelSelector: {}
   resourceReservation:
@@ -46,6 +48,7 @@ podgroupcontroller:
     pullPolicy: IfNotPresent
     # tag: ""  # Optional: Override global.tag or Chart.AppVersion
   affinity: {}
+
 binder:
   name: binder
   image:
@@ -128,7 +131,7 @@ postCleanup:
   serviceAccountName: post-delete-cleanup
 
 defaultQueue:
-  createDefaultQueue: true
+  createDefaultQueue: false
   parentName: default-parent-queue
   childName: default-queue
   parentResources:

@@ -5,7 +5,7 @@ package common
 
 import (
 	"fmt"
-
+	"k8s.io/klog/v2"
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/actions/utils"
@@ -16,15 +16,33 @@ import (
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/podgroup_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/framework"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/log"
-	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/scheduler_util"
+	scheduler_util "github.com/NVIDIA/KAI-scheduler/pkg/scheduler/scheduler_util"
 )
 
 func EvictAllPreemptees(ssn *framework.Session, preempteeTasks []*pod_info.PodInfo,
 	preemptor *podgroup_info.PodGroupInfo, stmt *framework.Statement,
 	actionType framework.ActionType) error {
 
-	messages := getEvictionMessages(ssn, preempteeTasks, preemptor, actionType)
-	for _, task := range preempteeTasks {
+    // -------- Safety net #3: never evict non-preemptible pods --------
+    evictable := make([]*pod_info.PodInfo, 0, len(preempteeTasks))
+    for _, t := range preempteeTasks {
+        if t == nil || t.Pod == nil {
+            continue
+        }
+        if scheduler_util.IsNonPreemptible(t.Pod) {
+            klog.V(3).InfoS("Refusing to evict non-preemptible pod",
+                "pod", klog.KObj(t.Pod), "node", t.NodeName, "action", actionType)
+            continue
+        }
+        evictable = append(evictable, t)
+    }
+    // If nothing is left to evict, just return nil (scenario will naturally fail later if it cannot fit).
+    if len(evictable) == 0 {
+        return nil
+    }
+
+	messages := getEvictionMessages(ssn, evictable, preemptor, actionType)
+	for _, task := range evictable {
 		message, found := messages[task.UID]
 		if !found {
 			return fmt.Errorf("failed to find message for task: %s", task.UID)
@@ -33,7 +51,7 @@ func EvictAllPreemptees(ssn *framework.Session, preempteeTasks []*pod_info.PodIn
 			task.Namespace, task.Name, message)
 		err := stmt.Evict(task, message, eviction_info.EvictionMetadata{
 			Action:           string(actionType),
-			EvictionGangSize: len(preempteeTasks),
+			EvictionGangSize: len(evictable),
 			Preemptor:        &types.NamespacedName{Namespace: preemptor.Namespace, Name: preemptor.Name},
 		})
 		if err != nil {

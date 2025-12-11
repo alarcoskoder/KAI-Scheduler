@@ -8,55 +8,8 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: kai-scheduler
+  name: kai-binder
 rules:
-- apiGroups:
-  - ""
-  resources:
-  - configmaps
-  - namespaces
-  - nodes
-  - persistentvolumeclaims
-  - persistentvolumes
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - events
-  - pods/status
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - pods/finalizers
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
 - apiGroups:
   - coordination.k8s.io
   resources:
@@ -73,6 +26,7 @@ rules:
   - ""
   resources:
   - configmaps
+  - pods
   verbs:
   - create
   - delete
@@ -82,9 +36,50 @@ rules:
   - update
   - watch
 - apiGroups:
-  - kueue.x-k8s.io
+  - ""
   resources:
-  - topologies
+  - events
+  - pods/binding
+  - pods/finalizers
+  verbs:
+  - create
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  - persistentvolumes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods/status
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - resource.k8s.io
+  resources:
+  - deviceclasses
+  - resourceslices
   verbs:
   - get
   - list
@@ -92,28 +87,19 @@ rules:
 - apiGroups:
   - resource.k8s.io
   resources:
-  - deviceclasses
   - resourceclaims
-  - resourceslices
+  - resourceclaims/status
   verbs:
   - get
   - list
-  - watch
-- apiGroups:
-  - scheduling.k8s.io
-  resources:
-  - priorityclasses
-  verbs:
-  - get
-  - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - scheduling.run.ai
   resources:
   - bindrequests
-  - podgroups/status
   verbs:
-  - create
   - delete
   - get
   - list
@@ -123,20 +109,19 @@ rules:
 - apiGroups:
   - scheduling.run.ai
   resources:
-  - podgroups
+  - bindrequests/finalizers
+  verbs:
+  - patch
+  - update
+- apiGroups:
+  - scheduling.run.ai
+  resources:
+  - bindrequests/status
   verbs:
   - get
   - list
   - patch
   - update
-  - watch
-- apiGroups:
-  - scheduling.run.ai
-  resources:
-  - queues
-  verbs:
-  - get
-  - list
   - watch
 - apiGroups:
   - storage.k8s.io
@@ -149,3 +134,14 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
+  - update
