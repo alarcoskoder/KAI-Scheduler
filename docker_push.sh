@@ -5,7 +5,8 @@ set -euo pipefail
 
 # Registry prefix and version
 REGISTRY_PREFIX="harbor.aimotive.com/lali-scheduler"
-VERSION="0.6"
+: "${VERSION:=0.0.7}"
+
 
 echo "🔍 Searching for local images matching ${REGISTRY_PREFIX}/*:${VERSION}..."
 

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"runtime/pprof"
 	"syscall"
 	"time"
 
@@ -34,6 +35,7 @@ func main() {
 	fs := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	verbosity := fs.Int("verbosity", 4, "logging verbosity")
 	filename := fs.String("filename", "", "location of the zipped JSON file")
+	cpuprofile := fs.String("cpuprofile", "", "write cpu profile to file")
 	_ = fs.Parse(os.Args[1:])
 	if filename == nil || len(*filename) == 0 {
 		fs.Usage()
@@ -81,6 +83,19 @@ func main() {
 	stopCh := make(chan struct{})
 	schedulerCache.Run(stopCh)
 	schedulerCache.WaitForCacheSync(stopCh)
+
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			log.InfraLogger.Fatalf("Failed to create CPU profile file: %v", err)
+		}
+		err = pprof.StartCPUProfile(f)
+		if err != nil {
+			log.InfraLogger.Fatalf("Failed to start CPU profile: %v", err)
+		}
+
+		defer pprof.StopCPUProfile()
+	}
 
 	ssn, err := framework.OpenSession(
 		schedulerCache, snapshot.Config, snapshot.SchedulerParams, "", &http.ServeMux{},
@@ -207,6 +222,13 @@ func loadClientsWithSnapshot(rawObjects *snapshot.RawKubernetesObjects) (*fake.C
 		_, err := kubeClient.StorageV1().CSIDrivers().Create(context.TODO(), csiDriver, v1.CreateOptions{})
 		if err != nil {
 			log.InfraLogger.Errorf("Failed to create CSI driver: %v", err)
+		}
+	}
+
+	for _, topology := range rawObjects.Topologies {
+		_, err := kueueClient.KueueV1alpha1().Topologies().Create(context.TODO(), topology, v1.CreateOptions{})
+		if err != nil {
+			log.InfraLogger.Errorf("Failed to create topology: %v", err)
 		}
 	}
 

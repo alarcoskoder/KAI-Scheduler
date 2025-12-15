@@ -77,11 +77,28 @@ func (ph *DefaultPluginsHub) GetPodGrouperPlugin(gvk metav1.GroupVersionKind) gr
 	return ph.defaultPlugin
 }
 
+func (ph *DefaultPluginsHub) GetDefaultPlugin() grouper.Grouper {
+	return ph.defaultPlugin
+}
+
+func (ph *DefaultPluginsHub) HasMatchingPlugin(gvk metav1.GroupVersionKind) bool {
+	if _, found := ph.customPlugins[gvk]; found {
+		return true
+	}
+
+	// search using wildcard version
+	gvk.Version = "*"
+	if _, found := ph.customPlugins[gvk]; found {
+		return true
+	}
+	return false
+}
+
 func NewDefaultPluginsHub(kubeClient client.Client, searchForLegacyPodGroups,
 	gangScheduleKnative bool, queueLabelKey, nodePoolLabelKey string,
-	defaultPrioritiesConfigMapName, defaultPrioritiesConfigMapNamespace string) *DefaultPluginsHub {
+	defaultConfigPerTypeConfigMapName, defaultConfigPerTypeConfigMapNamespace string) *DefaultPluginsHub {
 	defaultGrouper := defaultgrouper.NewDefaultGrouper(queueLabelKey, nodePoolLabelKey, kubeClient)
-	defaultGrouper.SetDefaultPrioritiesConfigMapParams(defaultPrioritiesConfigMapName, defaultPrioritiesConfigMapNamespace)
+	defaultGrouper.SetDefaultConfigPerTypeConfigMapParams(defaultConfigPerTypeConfigMapName, defaultConfigPerTypeConfigMapNamespace)
 
 	kubeFlowDistributedGrouper := kubeflow.NewKubeflowDistributedGrouper(defaultGrouper)
 	mpiGrouper := mpi.NewMpiGrouper(kubeClient, kubeFlowDistributedGrouper)

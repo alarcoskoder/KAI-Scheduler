@@ -24,7 +24,9 @@ import (
 )
 
 const (
-	mainResourceName = "kai"
+	mainResourceName              = "prometheus"
+	serviceMonitorAccountingLabel = "accounting"
+	serviceMonitorAccountingValue = "kai"
 )
 
 func prometheusForKAIConfig(
@@ -33,22 +35,11 @@ func prometheusForKAIConfig(
 	logger := log.FromContext(ctx)
 	config := kaiConfig.Spec.Prometheus
 
-	// Check if Prometheus is enabled
-	if config == nil || config.Enabled == nil || !*config.Enabled {
-		logger.Info("Prometheus is disabled in configuration")
-		return []client.Object{}, nil
-	}
-
-	// Check if external Prometheus URL is provided
 	if config.ExternalPrometheusUrl != nil && *config.ExternalPrometheusUrl != "" {
 		logger.Info("External Prometheus URL provided, skipping Prometheus CR creation", "url", *config.ExternalPrometheusUrl)
 
-		// For external Prometheus, we only create ServiceMonitors, not the Prometheus CR
-		// Note: Connectivity validation happens in the background monitoring goroutine, not here
 		return createServiceMonitorsForExternalPrometheus(ctx, runtimeClient, kaiConfig)
 	}
-
-	logger.Info("Prometheus is enabled, checking for Prometheus Operator installation")
 
 	// Check if Prometheus Operator is installed by looking for the Prometheus CRD
 	// This is a simple check - in production you might want to check for the operator deployment
@@ -58,11 +49,11 @@ func prometheusForKAIConfig(
 		return []client.Object{}, err
 	}
 
-	// If Prometheus Operator is not installed, we can't create a Prometheus CR
 	if !hasPrometheusOperator {
 		logger.Info("Prometheus Operator not found - Prometheus CRD is not available")
 		return []client.Object{}, nil
 	}
+
 	prometheus, err := common.ObjectForKAIConfig(ctx, runtimeClient, &monitoringv1.Prometheus{}, mainResourceName, kaiConfig.Spec.Namespace)
 	if err != nil {
 		if !errors.IsNotFound(err) {
@@ -70,6 +61,7 @@ func prometheusForKAIConfig(
 			return nil, err
 		}
 	}
+
 	var ok bool
 	prometheus, ok = prometheus.(*monitoringv1.Prometheus)
 	if !ok {
@@ -77,11 +69,7 @@ func prometheusForKAIConfig(
 		return nil, fmt.Errorf("failed to cast object to Prometheus type")
 	}
 
-	// Set the Prometheus spec from configuration
-	prometheusSpec := monitoringv1.PrometheusSpec{
-		// Basic configuration required for Prometheus Operator to create pods
-		// Using minimal spec to avoid field name issues
-	}
+	prometheusSpec := monitoringv1.PrometheusSpec{}
 
 	// Configure TSDB storage
 	storageSize, err := config.CalculateStorageSize(ctx, runtimeClient)
@@ -103,23 +91,20 @@ func prometheusForKAIConfig(
 		},
 	}
 
-	// Set retention period if specified
 	if config.RetentionPeriod != nil {
 		prometheusSpec.Retention = monitoringv1.Duration(*config.RetentionPeriod)
 	}
 
-	// Configure ServiceMonitor selector to match KAI ServiceMonitors
 	if config.ServiceMonitor != nil && *config.ServiceMonitor.Enabled {
 		prometheusSpec.ServiceMonitorSelector = &metav1.LabelSelector{
 			MatchLabels: map[string]string{
-				"accounting": mainResourceName,
+				serviceMonitorAccountingLabel: serviceMonitorAccountingValue,
 			},
 		}
 		prometheusSpec.ServiceMonitorNamespaceSelector = &metav1.LabelSelector{}
 	}
 
-	// Set the service account name in the Prometheus spec
-	prometheusSpec.ServiceAccountName = mainResourceName + "-prometheus"
+	prometheusSpec.ServiceAccountName = mainResourceName
 
 	prometheus.(*monitoringv1.Prometheus).Spec = prometheusSpec
 	return []client.Object{prometheus}, nil
@@ -153,16 +138,26 @@ func serviceMonitorsForKAIConfig(
 			return nil, err
 		}
 
+		serviceMonitorObj.GetLabels()[serviceMonitorAccountingLabel] = serviceMonitorAccountingValue
+
+		namespaces := []string{kaiConfig.Spec.Namespace}
+		if kaiService.Namespaces != nil {
+			namespaces = kaiService.Namespaces
+		}
+
+		labelSelector := map[string]string{"app": kaiService.Name}
+		if kaiService.LabelSelector != nil {
+			labelSelector = kaiService.LabelSelector
+		}
+
 		// Set the ServiceMonitor spec from configuration
 		serviceMonitorSpec := monitoringv1.ServiceMonitorSpec{
 			JobLabel: kaiService.JobLabel,
 			NamespaceSelector: monitoringv1.NamespaceSelector{
-				MatchNames: []string{kaiConfig.Spec.Namespace},
+				MatchNames: namespaces,
 			},
 			Selector: metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app": kaiService.Name,
-				},
+				MatchLabels: labelSelector,
 			},
 			Endpoints: []monitoringv1.Endpoint{
 				{
@@ -186,6 +181,7 @@ func serviceMonitorsForKAIConfig(
 		serviceMonitorObj.(*monitoringv1.ServiceMonitor).Spec = serviceMonitorSpec
 		serviceMonitors = append(serviceMonitors, serviceMonitorObj)
 	}
+
 	return serviceMonitors, nil
 }
 
@@ -193,9 +189,8 @@ func serviceMonitorsForKAIConfig(
 func prometheusServiceAccountForKAIConfig(
 	ctx context.Context, runtimeClient client.Reader, kaiConfig *kaiv1.Config,
 ) ([]client.Object, error) {
-	serviceAccountName := mainResourceName + "-prometheus"
+	serviceAccountName := mainResourceName
 
-	// Check if ServiceAccount already exists
 	saObj, err := common.ObjectForKAIConfig(ctx, runtimeClient, &v1.ServiceAccount{}, serviceAccountName, kaiConfig.Spec.Namespace)
 	if err != nil {
 		return []client.Object{}, err

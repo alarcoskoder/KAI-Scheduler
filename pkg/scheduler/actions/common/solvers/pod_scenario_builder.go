@@ -128,22 +128,22 @@ func (asb *PodAccumulatedScenarioBuilder) addNextPotentialVictims() bool {
 
 // Keep only pods that are allowed to be evicted.
 func filterNonPreemptibleTasks(tasks []*pod_info.PodInfo) []*pod_info.PodInfo {
-       if len(tasks) == 0 {
-               return tasks
-       }
-       kept := tasks[:0]
-       for _, t := range tasks {
-               if t == nil || t.Pod == nil {
-                       continue
-               }
-               if scheduler_util.IsNonPreemptible(t.Pod) {
-                       klog.V(4).InfoS("Skipping non-preemptible pod as potential victim",
-                               "pod", klog.KObj(t.Pod), "node", t.NodeName)
-                       continue
-               }
-               kept = append(kept, t)
-       }
-       return kept
+	if len(tasks) == 0 {
+		return tasks
+	}
+	kept := tasks[:0]
+	for _, t := range tasks {
+		if t == nil || t.Pod == nil {
+			continue
+		}
+		if scheduler_util.IsNonPreemptible(t.Pod) {
+			klog.V(4).InfoS("Skipping non-preemptible pod as potential victim",
+				"pod", klog.KObj(t.Pod), "node", t.NodeName)
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return kept
 }
 
 func (asb *PodAccumulatedScenarioBuilder) GetValidScenario() *solverscenario.ByNodeScenario {

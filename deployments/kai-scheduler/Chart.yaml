@@ -1,0 +1,9 @@
+# Copyright 2025 NVIDIA CORPORATION
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v2
+name: lali-scheduler
+description: KAI Scheduler modification by aiM
+type: application
+version: 0.0.7
+appVersion: 0.0.0

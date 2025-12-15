@@ -5,8 +5,8 @@ package common
 
 import (
 	"fmt"
-	"k8s.io/klog/v2"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/klog/v2"
 
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/actions/utils"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/common_info"
@@ -23,23 +23,23 @@ func EvictAllPreemptees(ssn *framework.Session, preempteeTasks []*pod_info.PodIn
 	preemptor *podgroup_info.PodGroupInfo, stmt *framework.Statement,
 	actionType framework.ActionType) error {
 
-    // -------- Safety net #3: never evict non-preemptible pods --------
-    evictable := make([]*pod_info.PodInfo, 0, len(preempteeTasks))
-    for _, t := range preempteeTasks {
-        if t == nil || t.Pod == nil {
-            continue
-        }
-        if scheduler_util.IsNonPreemptible(t.Pod) {
-            klog.V(3).InfoS("Refusing to evict non-preemptible pod",
-                "pod", klog.KObj(t.Pod), "node", t.NodeName, "action", actionType)
-            continue
-        }
-        evictable = append(evictable, t)
-    }
-    // If nothing is left to evict, just return nil (scenario will naturally fail later if it cannot fit).
-    if len(evictable) == 0 {
-        return nil
-    }
+	// -------- Safety net #3: never evict non-preemptible pods --------
+	evictable := make([]*pod_info.PodInfo, 0, len(preempteeTasks))
+	for _, t := range preempteeTasks {
+		if t == nil || t.Pod == nil {
+			continue
+		}
+		if scheduler_util.IsNonPreemptible(t.Pod) {
+			klog.V(3).InfoS("Refusing to evict non-preemptible pod",
+				"pod", klog.KObj(t.Pod), "node", t.NodeName, "action", actionType)
+			continue
+		}
+		evictable = append(evictable, t)
+	}
+	// If nothing is left to evict, just return nil (scenario will naturally fail later if it cannot fit).
+	if len(evictable) == 0 {
+		return nil
+	}
 
 	messages := getEvictionMessages(ssn, evictable, preemptor, actionType)
 	for _, task := range evictable {

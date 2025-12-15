@@ -12,9 +12,6 @@ metadata:
 spec:
   namespace: {{ .Release.Namespace }}
   global:
-    schedulerName: "lali-scheduler"
-    queueLabelKey: "kai.scheduler/queue"
-    nodePoolLabelKey: "kai.scheduler/nodepool"
     {{- if .Values.global.namespaceLabelSelector }}
     namespaceLabelSelector:
       {{- toYaml .Values.global.namespaceLabelSelector | nindent 6 }}
@@ -49,7 +46,7 @@ spec:
       image:
         name: {{ .Values.binder.image.name }}
         repository: {{ .Values.global.registry }}
-        tag: "{{ .Chart.Version }}"
+        tag: {{ .Values.binder.image.tag | default .Values.global.tag | default .Chart.AppVersion }}
         pullPolicy: {{ .Values.binder.image.pullPolicy | default .Values.global.imagePullPolicy }}
       {{- if .Values.binder.resources }}
       resources:
@@ -66,6 +63,10 @@ spec:
       {{- end }}
       image:
         name: {{ .Values.binder.resourceReservationImage.name }}
+      {{- if .Values.binder.resourceReservationPodResources }}
+      podResources:
+        {{- toYaml .Values.binder.resourceReservationPodResources | nindent 8 }}
+      {{- end }}
 
   podGroupController:
     service:
@@ -73,7 +74,7 @@ spec:
       image:
         name: {{ .Values.podgroupcontroller.image.name }}
         repository: {{ .Values.global.registry }}
-        tag: "{{ .Chart.Version }}"
+        tag: {{ .Values.podgroupcontroller.image.tag | default .Values.global.tag | default .Chart.AppVersion }}
         pullPolicy: {{ .Values.podgroupcontroller.image.pullPolicy | default .Values.global.imagePullPolicy }}
       {{- if .Values.podgroupcontroller.resources }}
       resources:
@@ -90,7 +91,7 @@ spec:
       image:
         name: {{ .Values.queuecontroller.image.name }}
         repository: {{ .Values.global.registry }}
-        tag: "{{ .Chart.Version }}"
+        tag: {{ .Values.queuecontroller.image.tag | default .Values.global.tag | default .Chart.AppVersion }}
         pullPolicy: {{ .Values.queuecontroller.image.pullPolicy | default .Values.global.imagePullPolicy }}
       {{- if .Values.queuecontroller.resources }}
       resources:
@@ -107,7 +108,7 @@ spec:
       image:
         name: {{ .Values.admission.image.name }}
         repository: {{ .Values.global.registry }}
-        tag: "{{ .Chart.Version }}"
+        tag: {{ .Values.admission.image.tag | default .Values.global.tag | default .Chart.AppVersion }}
         pullPolicy: {{ .Values.admission.image.pullPolicy | default .Values.global.imagePullPolicy }}
       {{- if .Values.admission.resources }}
       resources:
@@ -132,7 +133,7 @@ spec:
       image:
         name: {{ .Values.nodescaleadjuster.image.name }}
         repository: {{ .Values.global.registry }}
-        tag: "{{ .Chart.Version }}"
+        tag: {{ .Values.nodescaleadjuster.image.tag | default .Values.global.tag | default .Chart.AppVersion }}
         pullPolicy: {{ .Values.nodescaleadjuster.image.pullPolicy | default .Values.global.imagePullPolicy }}
       {{- if .Values.nodescaleadjuster.resources }}
       resources:
@@ -143,11 +144,11 @@ spec:
         {{- toYaml .Values.nodescaleadjuster.affinity | nindent 8 }}
       {{- end }}
     args:
-      nodeScaleNamespace: {{ .Values.nodescaleadjuster.scalingPodNamespace }} 
+      nodeScaleNamespace: {{ .Values.nodescaleadjuster.scalingPodNamespace }}
       scalingPodImage:
         name: {{ .Values.nodescaleadjuster.scalingPodImage.name }}
         repository: {{ .Values.global.registry }}
-        tag: "{{ .Chart.Version }}"
+        tag: {{ .Values.nodescaleadjuster.scalingPodImage.tag | default .Values.global.tag | default .Chart.AppVersion }}
         pullPolicy: {{ .Values.nodescaleadjuster.scalingPodImage.pullPolicy | default .Values.global.imagePullPolicy }}
 
   scheduler:
@@ -155,7 +156,7 @@ spec:
       image:
         name: {{ .Values.scheduler.image.name }}
         repository: {{ .Values.global.registry }}
-        tag: "{{ .Chart.Version }}"
+        tag: {{ .Values.scheduler.image.tag | default .Values.global.tag | default .Chart.AppVersion }}
         pullPolicy: {{ .Values.scheduler.image.pullPolicy | default .Values.global.imagePullPolicy }}
       {{- if .Values.scheduler.resources }}
       resources:

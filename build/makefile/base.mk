@@ -11,7 +11,7 @@ DOCKER_SOCK_PATH=/var/run/docker.sock
 DOCKERFILE_PATH=./Dockerfile
 CRD_UPGRADER_DOCKERFILE_PATH=./deployments/crd-upgrader/Dockerfile
 
-DOCKER_TAG?=0.6
+DOCKER_TAG?=0.0.7
 VERSION?=${DOCKER_TAG}
 
 DOCKER_REPO_BASE?=harbor.aimotive.com/lali-scheduler

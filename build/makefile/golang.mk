@@ -6,14 +6,19 @@ BUILD_DIR_ABS=$(shell pwd)/${BUILD_DIR}
 GOLANG_LINTER_CONFIG_PATH=build/lint/.golangci.yaml
 BUILD_OUT_PATH_AMD=${BUILD_DIR}/${SERVICE_NAME}-amd64
 BUILD_OUT_PATH_ARM=${BUILD_DIR}/${SERVICE_NAME}-arm64
-BUILD_IN_PATH=cmd/${SERVICE_NAME}/main.go
-# BUILD_IN_PATH=./cmd/${SERVICE_NAME}
+BUILD_IN_PATH=./cmd/${SERVICE_NAME}
 
 GOCACHE_DOCKER_DIR=/tmp/.cache
 GOCACHE_HOST_DIR=${HOME}/.cache/go-build-docker-gocache
 GOPATH_HOST_DIR=${HOME}/.cache/go-build-docker-gopath
 
 DOCKER_GO_CACHING_VOLUME_AND_ENV := -v ${GOPATH_HOST_DIR}:/go:z -v ${GOCACHE_HOST_DIR}:${GOCACHE_DOCKER_DIR}:z -e GOPATH=/go -e GOCACHE=${GOCACHE_DOCKER_DIR} -e GOLANGCI_LINT_CACHE=${GOCACHE_DOCKER_DIR}
+ifneq ($(GOPROXY),)
+DOCKER_GO_CACHING_VOLUME_AND_ENV += -e GOPROXY=$(GOPROXY)
+endif
+ifneq ($(GOSUMDB),)
+DOCKER_GO_CACHING_VOLUME_AND_ENV += -e GOSUMDB=$(GOSUMDB)
+endif
 
 ## Version
 GO_VERSION=1.24.4
@@ -76,14 +81,14 @@ build-go: builder build-go-amd build-go-arm
 
 build-go-amd: gocache
 	@ ${ECHO_COMMAND} ${GREEN_CONSOLE} "${CONSOLE_PREFIX} Building ${SERVICE_NAME}, GOOS: ${OS}, GOARCH amd64" ${BASE_CONSOLE}
+	#${DOCKER_GO_COMMAND_AMD} sh -c "cd /local && go build -mod=mod -buildvcs=false ${GO_BUILD_ADDITIONAL_FLAGS} -o ${BUILD_OUT_PATH_AMD} ${BUILD_IN_PATH}" || ${FAILURE_MESSAGE_HANDLER}
 	${DOCKER_GO_COMMAND_AMD} go build -buildvcs=false -ldflags "$(LDFLAGS)" ${GO_BUILD_ADDITIONAL_FLAGS} -o ${BUILD_OUT_PATH_AMD} ${BUILD_IN_PATH} || ${FAILURE_MESSAGE_HANDLER}
-#	${DOCKER_GO_COMMAND_AMD} sh -c "cd /local && go build -mod=mod -buildvcs=false ${GO_BUILD_ADDITIONAL_FLAGS} -o ${BUILD_OUT_PATH_AMD} ${BUILD_IN_PATH}" || ${FAILURE_MESSAGE_HANDLER}
 	${SUCCESS_MESSAGE_HANDLER}
 .PHONY: build-go-amd
 
 build-go-arm: gocache
 	@ ${ECHO_COMMAND} ${GREEN_CONSOLE} "${CONSOLE_PREFIX} Building ${SERVICE_NAME}, GOOS: ${OS}, GOARCH arm64" ${BASE_CONSOLE}
+	#${DOCKER_GO_COMMAND_ARM} sh -c "cd /local && go build -mod=mod -buildvcs=false ${GO_BUILD_ADDITIONAL_FLAGS} -o ${BUILD_OUT_PATH_ARM} ${BUILD_IN_PATH}" || ${FAILURE_MESSAGE_HANDLER}
 	${DOCKER_GO_COMMAND_ARM} go build -buildvcs=false -ldflags "$(LDFLAGS)" ${GO_BUILD_ADDITIONAL_FLAGS} -o ${BUILD_OUT_PATH_ARM} ${BUILD_IN_PATH} || ${FAILURE_MESSAGE_HANDLER}
-#	${DOCKER_GO_COMMAND_ARM} sh -c "cd /local && go build -mod=mod -buildvcs=false ${GO_BUILD_ADDITIONAL_FLAGS} -o ${BUILD_OUT_PATH_ARM} ${BUILD_IN_PATH}" || ${FAILURE_MESSAGE_HANDLER}
 	${SUCCESS_MESSAGE_HANDLER}
 .PHONY: build-go-arm
