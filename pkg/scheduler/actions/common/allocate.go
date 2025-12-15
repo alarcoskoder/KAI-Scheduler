@@ -5,11 +5,13 @@ package common
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/common_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/node_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/pod_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/podgroup_info"
+	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/podgroup_info/subgroup_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/framework"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/gpu_sharing"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/log"
@@ -17,7 +19,9 @@ import (
 
 func AllocateJob(ssn *framework.Session, stmt *framework.Statement, nodes []*node_info.NodeInfo,
 	job *podgroup_info.PodGroupInfo, isPipelineOnly bool) bool {
-	tasksToAllocate := podgroup_info.GetTasksToAllocate(job, ssn.SubGroupOrderFn, ssn.TaskOrderFn, !isPipelineOnly)
+	ssn.PreJobAllocation(job)
+
+	tasksToAllocate := podgroup_info.GetTasksToAllocate(job, ssn.PodSetOrderFn, ssn.TaskOrderFn, !isPipelineOnly)
 
 	result := ssn.IsJobOverQueueCapacityFn(job, tasksToAllocate)
 	if !result.IsSchedulable {
@@ -26,19 +30,89 @@ func AllocateJob(ssn *framework.Session, stmt *framework.Statement, nodes []*nod
 		}
 		return false
 	}
-	cp := stmt.Checkpoint()
-	for index, task := range tasksToAllocate {
-		success := allocateTask(ssn, stmt, nodes, task, isPipelineOnly)
-		if !success {
-			if err := stmt.Rollback(cp); err != nil {
-				log.InfraLogger.Errorf("Failed to rollback statement in session %v, err: %v", ssn.UID, err)
-			}
+	return allocateSubGroupSet(ssn, stmt, nodes, job, job.RootSubGroupSet, tasksToAllocate, isPipelineOnly)
+}
 
-			handleFailedTaskAllocation(job, task, index)
+func allocateSubGroupSet(ssn *framework.Session, stmt *framework.Statement, nodes []*node_info.NodeInfo,
+	job *podgroup_info.PodGroupInfo, subGroupSet *subgroup_info.SubGroupSet, tasksToAllocate []*pod_info.PodInfo,
+	isPipelineOnly bool,
+) bool {
+	nodeSets, err := ssn.SubsetNodesFn(job, &subGroupSet.SubGroupInfo, subGroupSet.GetAllPodSets(), tasksToAllocate, nodes)
+	if err != nil {
+		log.InfraLogger.Errorf(
+			"Failed to run SubsetNodes on job <%s/%s>: %v", job.Namespace, job.Namespace, err)
+		return false
+	}
+
+	for _, nodeSet := range nodeSets {
+		cp := stmt.Checkpoint()
+		if allocateSubGroupSetOnNodes(ssn, stmt, nodeSet, job, subGroupSet, tasksToAllocate, isPipelineOnly) {
+			return true
+		}
+		if err := stmt.Rollback(cp); err != nil {
+			log.InfraLogger.Errorf("Failed to rollback statement in session %v, err: %v", ssn.ID, err)
+		}
+	}
+
+	return false
+}
+
+func allocateSubGroupSetOnNodes(ssn *framework.Session, stmt *framework.Statement, nodes node_info.NodeSet,
+	job *podgroup_info.PodGroupInfo, subGroupSet *subgroup_info.SubGroupSet, tasksToAllocate []*pod_info.PodInfo,
+	isPipelineOnly bool,
+) bool {
+	for _, childSubGroupSet := range orderedSubGroupSets(ssn, subGroupSet.GetChildGroups()) {
+		podSets := childSubGroupSet.GetAllPodSets()
+		subGroupTasks := filterTasksForPodSets(podSets, tasksToAllocate)
+		if !allocateSubGroupSet(ssn, stmt, nodes, job, childSubGroupSet, subGroupTasks, isPipelineOnly) {
 			return false
 		}
 	}
 
+	for _, podSet := range orderedPodSets(ssn, subGroupSet.GetChildPodSets()) {
+		podSetTasks := filterTasksForPodSet(podSet, tasksToAllocate)
+		if !allocatePodSet(ssn, stmt, nodes, job, podSet, podSetTasks, isPipelineOnly) {
+			return false
+		}
+	}
+	return true
+}
+
+func allocatePodSet(ssn *framework.Session, stmt *framework.Statement, nodes node_info.NodeSet,
+	job *podgroup_info.PodGroupInfo, podSet *subgroup_info.PodSet, tasksToAllocate []*pod_info.PodInfo,
+	isPipelineOnly bool,
+) bool {
+	podSets := map[string]*subgroup_info.PodSet{
+		podSet.GetName(): podSet,
+	}
+	nodeSets, err := ssn.SubsetNodesFn(job, &podSet.SubGroupInfo, podSets, tasksToAllocate, nodes)
+	if err != nil {
+		log.InfraLogger.Errorf(
+			"Failed to run SubsetNodes on job <%s/%s>: %v", job.Namespace, job.Namespace, err)
+		return false
+	}
+
+	for _, nodeSet := range nodeSets {
+		cp := stmt.Checkpoint()
+		if allocateTasksOnNodeSet(ssn, stmt, nodeSet, job, tasksToAllocate, isPipelineOnly) {
+			return true
+		}
+		if err := stmt.Rollback(cp); err != nil {
+			log.InfraLogger.Errorf("Failed to rollback statement in session %v, err: %v", ssn.ID, err)
+		}
+	}
+	return false
+}
+
+func allocateTasksOnNodeSet(ssn *framework.Session, stmt *framework.Statement, nodes node_info.NodeSet,
+	job *podgroup_info.PodGroupInfo, tasksToAllocate []*pod_info.PodInfo, isPipelineOnly bool) bool {
+	for index, task := range tasksToAllocate {
+		success := allocateTask(ssn, stmt, nodes, task, isPipelineOnly)
+		if !success {
+			handleFailedTaskAllocation(job, task, index)
+			return false
+		}
+	}
 	return true
 }
 
@@ -98,7 +172,7 @@ func bindTaskToNode(ssn *framework.Session, stmt *framework.Statement, task *pod
 		task.Namespace, task.Name, node.Name, task.ResReq)
 
 	if err := stmt.Allocate(task, node.Name); err != nil {
-		log.InfraLogger.Errorf("Failed to bind Task %v on %v in Session %v, err: %v", task.UID, node.Name, ssn.UID, err)
+		log.InfraLogger.Errorf("Failed to bind Task %v on %v in Session %v, err: %v", task.UID, node.Name, ssn.ID, err)
 		return false
 	}
 	return true
@@ -109,7 +183,7 @@ func pipelineTaskToNode(ssn *framework.Session, stmt *framework.Statement, task 
 		task.Namespace, task.Name, node.Name, task.ResReq)
 
 	if err := stmt.Pipeline(task, node.Name, updateTasksIfExistsOnNode); err != nil {
-		log.InfraLogger.V(6).Infof("Failed to pipeline Task %v on %v in Session %v", task.UID, node.Name, ssn.UID)
+		log.InfraLogger.V(6).Infof("Failed to pipeline Task %v on %v in Session %v", task.UID, node.Name, ssn.ID)
 		return false
 	}
 	return true
@@ -123,19 +197,78 @@ func handleFailedTaskAllocation(job *podgroup_info.PodGroupInfo, unschedulableTa
 		allocationError.SetError(common_info.DefaultPodError)
 	}
 
-	numRunningTasks := job.GetActivelyRunningTasksCount()
-	if job.MinAvailable > 1 && numRunningTasks < job.MinAvailable {
-		job.SetJobFitError(
-			podgroup_info.PodSchedulingErrors,
-			fmt.Sprintf("Resources were found for %d pods while %d are required for gang scheduling. "+
-				"Additional pods cannot be scheduled due to: %s",
-				numSchedulableTasks, job.MinAvailable, allocationError.Error()),
-			nil)
-	} else {
+	gangScheduling := isGangScheduling(job)
+	taskSubGroupName := podgroup_info.DefaultSubGroup
+	if len(unschedulableTask.SubGroupName) != 0 {
+		taskSubGroupName = unschedulableTask.SubGroupName
+	}
+	taskSubGroup := job.GetSubGroups()[taskSubGroupName]
+
+	if !gangScheduling || taskSubGroup.GetNumActiveUsedTasks() >= int(taskSubGroup.GetMinAvailable()) {
 		job.SetJobFitError(
 			podgroup_info.PodSchedulingErrors,
 			fmt.Sprintf("Resources were not found for pod %s/%s due to: %s",
 				unschedulableTask.Namespace, unschedulableTask.Name, allocationError.Error()),
 			nil)
+		return
 	}
+
+	if len(job.GetSubGroups()) == 1 && taskSubGroup.GetName() == podgroup_info.DefaultSubGroup {
+		job.SetJobFitError(
+			podgroup_info.PodSchedulingErrors,
+			fmt.Sprintf("Resources were found for %d pods while %d are required for gang scheduling. "+
+				"Additional pods cannot be scheduled due to: %s",
+				numSchedulableTasks, taskSubGroup.GetMinAvailable(), allocationError.Error()),
+			nil)
+		return
+	}
+	job.SetJobFitError(
+		podgroup_info.PodSchedulingErrors,
+		fmt.Sprintf("Resources were found for %d pods from all sub-groups while sub-group %s requires %d pods for gang scheduling. "+
+			"Additional pods cannot be scheduled in this sub-group due to: %s",
+			numSchedulableTasks, taskSubGroup.GetName(), taskSubGroup.GetMinAvailable(), allocationError.Error()),
+		nil)
+}
+
+func isGangScheduling(job *podgroup_info.PodGroupInfo) bool {
+	for _, subGroup := range job.GetSubGroups() {
+		if subGroup.GetMinAvailable() > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func filterTasksForPodSet(podSet *subgroup_info.PodSet, tasks []*pod_info.PodInfo) []*pod_info.PodInfo {
+	return filterTasksForPodSets(map[string]*subgroup_info.PodSet{podSet.GetName(): podSet}, tasks)
+}
+
+func filterTasksForPodSets(podSets map[string]*subgroup_info.PodSet, tasks []*pod_info.PodInfo) []*pod_info.PodInfo {
+	var result []*pod_info.PodInfo
+	for _, task := range tasks {
+		subGroupName := task.SubGroupName
+		if len(subGroupName) == 0 {
+			subGroupName = podgroup_info.DefaultSubGroup
+		}
+		if _, found := podSets[subGroupName]; found {
+			result = append(result, task)
+		}
+	}
+	return result
+}
+
+func orderedSubGroupSets(ssn *framework.Session, subGroupSets []*subgroup_info.SubGroupSet) []*subgroup_info.SubGroupSet {
+	result := append([]*subgroup_info.SubGroupSet{}, subGroupSets...)
+	sort.Slice(result, func(i, j int) bool {
+		return ssn.SubGroupSetOrderFn(result[i], result[j])
+	})
+	return result
+}
+
+func orderedPodSets(ssn *framework.Session, podSets []*subgroup_info.PodSet) []*subgroup_info.PodSet {
+	result := append([]*subgroup_info.PodSet{}, podSets...)
+	sort.Slice(result, func(i, j int) bool {
+		return ssn.PodSetOrderFn(result[i], result[j])
+	})
+	return result
 }

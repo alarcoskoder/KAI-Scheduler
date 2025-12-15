@@ -25,11 +25,11 @@ import (
 	commonconstants "github.com/NVIDIA/KAI-scheduler/pkg/common/constants"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/common_info"
-	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/common_info/resources"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/node_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/pod_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/pod_status"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/podgroup_info"
+	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/podgroup_info/subgroup_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/queue_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/resource_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/conf"
@@ -54,19 +54,40 @@ type proportionPlugin struct {
 	queues              map[common_info.QueueID]*rs.QueueAttributes
 	jobSimulationQueues map[common_info.QueueID]*rs.QueueAttributes
 	// Arguments given for the plugin
-	pluginArguments           map[string]string
-	subGroupOrderFn           common_info.LessFn
-	taskOrderFunc             common_info.LessFn
-	reclaimablePlugin         *rec.Reclaimable
-	isInferencePreemptible    bool
-	allowConsolidatingReclaim bool
+	pluginArguments               framework.PluginArguments
+	subGroupOrderFn               common_info.LessFn
+	taskOrderFunc                 common_info.LessFn
+	reclaimablePlugin             *rec.Reclaimable
+	allowConsolidatingReclaim     bool
+	relcaimerSaturationMultiplier float64
+	kValue                        float64
 }
 
-func New(arguments map[string]string) framework.Plugin {
+func New(arguments framework.PluginArguments) framework.Plugin {
+	multiplier, err := arguments.GetFloat64("relcaimerSaturationMultiplier", 1.0)
+	if err != nil {
+		log.InfraLogger.Warningf("Failed to parse relcaimerSaturationMultiplier: %v. Using default value of 1.0", err)
+	}
+	if multiplier < 1.0 {
+		log.InfraLogger.Warningf("relcaimerSaturationMultiplier must be >= 1.0, got %v. Using default value of 1.0", multiplier)
+		multiplier = 1.0
+	}
+
+	kValue, err := arguments.GetFloat64("kValue", 1.0)
+	if err != nil {
+		log.InfraLogger.Warningf("Failed to parse kValue: %v. Using default value of 1.0", err)
+	}
+	if kValue <= 0.0 {
+		log.InfraLogger.Warningf("kValue must be > 0.0, got %v. Setting as 0", kValue)
+		kValue = 0.0
+	}
+
 	return &proportionPlugin{
-		totalResource:   rs.EmptyResourceQuantities(),
-		queues:          map[common_info.QueueID]*rs.QueueAttributes{},
-		pluginArguments: arguments,
+		totalResource:                 rs.EmptyResourceQuantities(),
+		queues:                        map[common_info.QueueID]*rs.QueueAttributes{},
+		pluginArguments:               arguments,
+		relcaimerSaturationMultiplier: multiplier,
+		kValue:                        kValue,
 	}
 }
 
@@ -76,11 +97,10 @@ func (pp *proportionPlugin) Name() string {
 
 func (pp *proportionPlugin) OnSessionOpen(ssn *framework.Session) {
 	pp.calculateResourcesProportion(ssn)
-	pp.subGroupOrderFn = ssn.SubGroupOrderFn
+	pp.subGroupOrderFn = ssn.PodSetOrderFn
 	pp.taskOrderFunc = ssn.TaskOrderFn
-	pp.reclaimablePlugin = rec.New(ssn.IsInferencePreemptible())
-	pp.isInferencePreemptible = ssn.IsInferencePreemptible()
-	capacityPolicy := cp.New(pp.queues, ssn.IsInferencePreemptible())
+	pp.reclaimablePlugin = rec.New(pp.relcaimerSaturationMultiplier)
+	capacityPolicy := cp.New(pp.queues)
 	ssn.AddQueueOrderFn(pp.queueOrder)
 	ssn.AddCanReclaimResourcesFn(pp.CanReclaimResourcesFn)
 	ssn.AddReclaimScenarioValidatorFn(pp.reclaimableFn)
@@ -141,23 +161,59 @@ func (pp *proportionPlugin) reclaimableFn(
 
 func (pp *proportionPlugin) getVictimResources(victim *api.VictimInfo) []*resource_info.Resource {
 	var victimResources []*resource_info.Resource
-	if len(victim.Tasks) > int(victim.Job.MinAvailable) {
-		elasticTasks := victim.Tasks[victim.Job.MinAvailable:]
-		for _, task := range elasticTasks {
-			resources := getResources(pp.allowConsolidatingReclaim, task)
-			if resources == nil {
-				continue
-			}
-			victimResources = append(victimResources, resources)
+
+	elasticTasks, coreTasks := splitVictimTasks(victim.Tasks, victim.Job.GetSubGroups())
+
+	// Process elastic tasks individually
+	for _, task := range elasticTasks {
+		resources := getResources(pp.allowConsolidatingReclaim, task)
+		if resources == nil {
+			continue
 		}
+		victimResources = append(victimResources, resources)
 	}
 
-	resources := getResources(pp.allowConsolidatingReclaim, victim.Tasks[:victim.Job.MinAvailable]...)
+	// Process core tasks as a group
+	resources := getResources(pp.allowConsolidatingReclaim, coreTasks...)
 	if resources != nil {
 		victimResources = append(victimResources, resources)
 	}
 
 	return victimResources
+}
+
+// splitVictimTasks safely splits victim tasks into elastic and core tasks
+// Returns (elasticTasks, coreTasks)
+func splitVictimTasks(tasks []*pod_info.PodInfo, subGroups map[string]*subgroup_info.PodSet) ([]*pod_info.PodInfo, []*pod_info.PodInfo) {
+	subGroupsToTasks := map[string][]*pod_info.PodInfo{}
+	for _, task := range tasks {
+		subGroupName := podgroup_info.DefaultSubGroup
+		if task.SubGroupName != "" {
+			subGroupName = task.SubGroupName
+		}
+		if _, found := subGroupsToTasks[subGroupName]; !found {
+			subGroupsToTasks[subGroupName] = []*pod_info.PodInfo{}
+		}
+		subGroupsToTasks[subGroupName] = append(subGroupsToTasks[subGroupName], task)
+	}
+
+	coreTasks := []*pod_info.PodInfo{}
+	elasticTasks := []*pod_info.PodInfo{}
+	for subGroupName, subGroupTasks := range subGroupsToTasks {
+		subGroup := subGroups[subGroupName]
+
+		// Handle case where minAvailable is greater than or equal to the number of tasks
+		if subGroup.GetMinAvailable() >= int32(len(subGroupTasks)) {
+			// All tasks are considered core tasks, no elastic tasks
+			coreTasks = append(coreTasks, subGroupTasks...)
+			continue
+		}
+
+		coreTasks = append(coreTasks, subGroupTasks[:subGroup.GetMinAvailable()]...)
+		elasticTasks = append(elasticTasks, subGroupTasks[subGroup.GetMinAvailable():]...)
+	}
+
+	return elasticTasks, coreTasks
 }
 
 func getResources(ignoreReallocatedTasks bool, pods ...*pod_info.PodInfo) *resource_info.Resource {
@@ -185,9 +241,10 @@ func (pp *proportionPlugin) calculateResourcesProportion(ssn *framework.Session)
 	log.InfraLogger.V(6).Infof("Calculating resource proportion")
 
 	pp.setTotalResources(ssn)
+
 	pp.createQueueAttributes(ssn)
-	log.InfraLogger.V(3).Infof("Total allocatable resources are <%v>, number of nodes: <%v>, number of "+
-		"queues: <%v>", pp.totalResource.String(), len(ssn.Nodes), len(pp.queues))
+	log.InfraLogger.V(3).Infof("Total allocatable resources are <%s>, number of nodes: <%d>, number of "+
+		"queues: <%d>", pp.totalResource, len(ssn.Nodes), len(pp.queues))
 }
 
 func (pp *proportionPlugin) setTotalResources(ssn *framework.Session) {
@@ -211,18 +268,6 @@ func getNodeResources(ssn *framework.Session, node *node_info.NodeInfo) rs.Resou
 		nodeResource.Add(rs.NewResourceQuantities(node.Allocatable.Cpu(), node.Allocatable.Memory(), 0))
 	} else {
 		nodeResource.Add(utils.QuantifyResource(node.Allocatable))
-		migEnabledGpus := 0
-		for resource, qty := range node.Node.Status.Allocatable {
-			if resource_info.IsMigResource(resource) {
-				gpu, _, err := resources.ExtractGpuAndMemoryFromMigResourceName(string(resource))
-				if err != nil {
-					log.InfraLogger.Errorf("Failed to extract gpu and memory from mig resource %v: %v", resource, err)
-					continue
-				}
-				migEnabledGpus += int(qty.Value()) * gpu
-			}
-		}
-		nodeResource[rs.GpuResource] += float64(migEnabledGpus)
 	}
 
 	// Subtract resources of non-related pods
@@ -251,7 +296,7 @@ func (pp *proportionPlugin) buildReclaimerInfo(reclaimer *podgroup_info.PodGroup
 		Name:          reclaimer.Name,
 		Namespace:     reclaimer.Namespace,
 		Queue:         reclaimer.Queue,
-		IsPreemptable: reclaimer.IsPreemptibleJob(pp.isInferencePreemptible),
+		IsPreemptable: reclaimer.IsPreemptibleJob(),
 		RequiredResources: podgroup_info.GetTasksToAllocateInitResource(
 			reclaimer, pp.subGroupOrderFn, pp.taskOrderFunc, false),
 	}
@@ -287,6 +332,11 @@ func (pp *proportionPlugin) createQueueResourceAttrs(ssn *framework.Session) {
 		overQuotaWeight = queue.Resources.GPU.OverQuotaWeight
 		queueAttributes.SetQuotaResources(rs.GpuResource, deserved, limit, overQuotaWeight)
 
+		usage, found := ssn.ResourceUsage.Queues[queue.UID]
+		if found {
+			queueAttributes.SetResourceUsage(usage)
+		}
+
 		pp.queues[queue.UID] = queueAttributes
 		log.InfraLogger.V(7).Infof("Added queue attributes for queue <%s>", queue.Name)
 	}
@@ -301,7 +351,7 @@ func (pp *proportionPlugin) updateQueuesCurrentResourceUsage(ssn *framework.Sess
 			if pod_status.AllocatedStatus(status) {
 				for _, t := range tasks {
 					resources := utils.QuantifyResourceRequirements(t.AcceptedResource)
-					isPreemptible := job.IsPreemptibleJob(ssn.IsInferencePreemptible())
+					isPreemptible := job.IsPreemptibleJob()
 					pp.updateQueuesResourceUsageForAllocatedJob(job.Queue, resources, isPreemptible)
 				}
 			} else if status == pod_status.Pending {
@@ -345,22 +395,23 @@ func (pp *proportionPlugin) updateQueuesResourceUsageForPendingJob(queueId commo
 
 func (pp *proportionPlugin) setFairShare() {
 	topQueues := pp.getTopQueues()
+	metrics.ResetQueueUsage()
 	metrics.ResetQueueFairShare()
-	pp.setFairShareForQueues(pp.totalResource, topQueues)
+	pp.setFairShareForQueues(pp.totalResource, pp.kValue, topQueues)
 }
 
-func (pp *proportionPlugin) setFairShareForQueues(totalResources rs.ResourceQuantities,
+func (pp *proportionPlugin) setFairShareForQueues(totalResources rs.ResourceQuantities, kValue float64,
 	queues map[common_info.QueueID]*rs.QueueAttributes) {
 
 	if len(queues) == 0 {
 		return
 	}
 
-	resource_division.SetResourcesShare(totalResources, queues)
+	resource_division.SetResourcesShare(totalResources, kValue, queues)
 	for _, queue := range queues {
 		childQueues := pp.getChildQueues(queue)
 		resources := queue.GetFairShare()
-		pp.setFairShareForQueues(resources, childQueues)
+		pp.setFairShareForQueues(resources, kValue, childQueues)
 	}
 }
 
@@ -385,7 +436,7 @@ func (pp *proportionPlugin) getChildQueues(parentQueue *rs.QueueAttributes) map[
 func (pp *proportionPlugin) allocateHandlerFn(ssn *framework.Session) func(event *framework.Event) {
 	return func(event *framework.Event) {
 		job := ssn.PodGroupInfos[event.Task.Job]
-		isPreemptibleJob := job.IsPreemptibleJob(ssn.IsInferencePreemptible())
+		isPreemptibleJob := job.IsPreemptibleJob()
 		taskResources := utils.QuantifyResourceRequirements(event.Task.AcceptedResource)
 
 		for queue, ok := pp.queues[job.Queue]; ok; queue, ok = pp.queues[queue.ParentQueue] {
@@ -400,7 +451,7 @@ func (pp *proportionPlugin) allocateHandlerFn(ssn *framework.Session) func(event
 		}
 
 		leafQueue := pp.queues[job.Queue]
-		log.InfraLogger.V(7).Infof("Proportion AllocateFunc: job <%v/%v>, task resources <%v>, "+
+		log.InfraLogger.V(7).Infof("Proportion AllocateFunc: job <%v/%v>, task resources <%s>, "+
 			"queue: <%v>, queue allocated resources: <%v>",
 			job.Namespace, job.Name, taskResources, leafQueue.Name, leafQueue.GetAllocatedShare())
 	}
@@ -409,7 +460,7 @@ func (pp *proportionPlugin) allocateHandlerFn(ssn *framework.Session) func(event
 func (pp *proportionPlugin) deallocateHandlerFn(ssn *framework.Session) func(event *framework.Event) {
 	return func(event *framework.Event) {
 		job := ssn.PodGroupInfos[event.Task.Job]
-		isPreemptibleJob := job.IsPreemptibleJob(ssn.IsInferencePreemptible())
+		isPreemptibleJob := job.IsPreemptibleJob()
 		taskResources := utils.QuantifyResourceRequirements(event.Task.AcceptedResource)
 
 		for queue, ok := pp.queues[job.Queue]; ok; queue, ok = pp.queues[queue.ParentQueue] {
@@ -424,9 +475,9 @@ func (pp *proportionPlugin) deallocateHandlerFn(ssn *framework.Session) func(eve
 		}
 
 		leafQueue := pp.queues[job.Queue]
-		log.InfraLogger.V(7).Infof("Proportion DeallocateFunc: job <%v/%v>, task resources <%v>, "+
+		log.InfraLogger.V(7).Infof("Proportion DeallocateFunc: job <%v/%v>, task resources <%s>, "+
 			"queue: <%v>, queue allocated resources: <%v>",
-			job.Namespace, job.Name, taskResources.String(), leafQueue.Name, leafQueue.GetAllocatedShare())
+			job.Namespace, job.Name, taskResources, leafQueue.Name, leafQueue.GetAllocatedShare())
 	}
 }
 

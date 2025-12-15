@@ -51,7 +51,7 @@ func (s *JobSolver) Solve(
 
 	var statement *framework.Statement
 	var pendingTasks []*pod_info.PodInfo
-	tasksToAllocate := podgroup_info.GetTasksToAllocate(pendingJob, ssn.SubGroupOrderFn, ssn.TaskOrderFn, false)
+	tasksToAllocate := podgroup_info.GetTasksToAllocate(pendingJob, ssn.PodSetOrderFn, ssn.TaskOrderFn, false)
 	for _, nextTaskToSolve := range tasksToAllocate {
 		nextTasksToSolve := []*pod_info.PodInfo{nextTaskToSolve}
 		pendingTasks = append(pendingTasks, nextTasksToSolve...)
@@ -122,15 +122,16 @@ func (s *JobSolver) solvePartialJob(ssn *framework.Session, state *solvingState,
 func getPartialJobRepresentative(
 	job *podgroup_info.PodGroupInfo, pendingTasks []*pod_info.PodInfo) *podgroup_info.PodGroupInfo {
 	jobRepresentative := job.CloneWithTasks(pendingTasks)
-	jobRepresentative.MinAvailable = int32(len(pendingTasks))
 	subGroupsMinAvailable := map[string]int{}
 	for _, pendingTask := range pendingTasks {
-		if _, found := jobRepresentative.SubGroups[pendingTask.SubGroupName]; found {
+		if _, found := jobRepresentative.GetSubGroups()[pendingTask.SubGroupName]; found {
 			subGroupsMinAvailable[pendingTask.SubGroupName] += 1
+		} else {
+			subGroupsMinAvailable[podgroup_info.DefaultSubGroup] += 1
 		}
 	}
 	for subGroupName, minAvailable := range subGroupsMinAvailable {
-		subGroup, found := jobRepresentative.SubGroups[subGroupName]
+		subGroup, found := jobRepresentative.GetSubGroups()[subGroupName]
 		if !found {
 			log.InfraLogger.V(2).Warnf("Couldn't find SubGroup with name %s for job %s",
 				subGroupName, job.NamespacedName,

@@ -6,20 +6,29 @@ package topology
 import (
 	"strings"
 
-	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/node_info"
 	kueuev1alpha1 "sigs.k8s.io/kueue/apis/kueue/v1alpha1"
+
+	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/node_info"
+	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/resource_info"
 )
 
-// TopologyDomainID uniquely identifies a topology domain
-type TopologyDomainID string
+const (
+	allocatablePodsNotSet = -1
+)
 
-// TopologyInfo represents a topology tree for the cluster
-type TopologyInfo struct {
-	// Root of the topology tree
-	Root *TopologyDomainInfo
+// DomainID uniquely identifies a topology domain
+type DomainID string
 
+type DomainLevel string
+
+type LevelDomainInfos map[DomainID]*DomainInfo
+
+type domainsByLevel map[DomainLevel]LevelDomainInfos
+
+// Info represents a topology tree for the cluster
+type Info struct {
 	// Map of all domains by their level for quick lookup
-	DomainsByLevel map[string]map[TopologyDomainID]*TopologyDomainInfo
+	DomainsByLevel domainsByLevel
 
 	// Name of this topology configuration
 	Name string
@@ -28,22 +37,16 @@ type TopologyInfo struct {
 	TopologyResource *kueuev1alpha1.Topology
 }
 
-// TopologyDomainInfo represents a node in the topology tree
-type TopologyDomainInfo struct {
+// DomainInfo represents a node in the topology tree
+type DomainInfo struct {
 	// Unique ID of this domain
-	ID TopologyDomainID
-
-	// Name of this domain
-	Name string
+	ID DomainID
 
 	// Level in the hierarchy (e.g., "datacenter", "zone", "rack", "node")
-	Level string
+	Level DomainLevel
 
-	// Parent domain, nil for root
-	Parent *TopologyDomainInfo
-
-	// Child domains
-	Children []*TopologyDomainInfo
+	// Child domains (slice maintains ordering for bin-packing and traversal algorithms)
+	Children []*DomainInfo
 
 	// Nodes that belong to this domain
 	Nodes map[string]*node_info.NodeInfo
@@ -51,35 +54,48 @@ type TopologyDomainInfo struct {
 	// Number of pods that can be allocated in this domain for the job
 	AllocatablePods int
 
-	// Depth in the tree from root (0 for root)
-	Depth int
+	// Total available resources in this domain
+	IdleOrReleasingResources *resource_info.Resource
 }
 
-func NewTopologyDomainInfo(id TopologyDomainID, name, level string, depth int) *TopologyDomainInfo {
-	return &TopologyDomainInfo{
-		ID:       id,
-		Name:     name,
-		Level:    level,
-		Parent:   nil,
-		Children: []*TopologyDomainInfo{},
-		Nodes:    map[string]*node_info.NodeInfo{},
-		Depth:    depth,
+func NewDomainInfo(id DomainID, level DomainLevel) *DomainInfo {
+	return &DomainInfo{
+		ID:                       id,
+		Level:                    level,
+		Children:                 []*DomainInfo{},
+		Nodes:                    map[string]*node_info.NodeInfo{},
+		AllocatablePods:          allocatablePodsNotSet,
+		IdleOrReleasingResources: resource_info.EmptyResource(),
 	}
 }
 
-func calcDomainId(leafLevelIndex int, levels []kueuev1alpha1.TopologyLevel, nodeLabels map[string]string) TopologyDomainID {
+func (di *DomainInfo) AddNode(nodeInfo *node_info.NodeInfo) {
+	di.Nodes[nodeInfo.Name] = nodeInfo
+}
+
+func (di *DomainInfo) GetNonAllocatedGPUsInDomain() float64 {
+	result := float64(0)
+	for _, node := range di.Nodes {
+		result += node.NonAllocatedResource(resource_info.GPUResourceName)
+	}
+	return result
+}
+
+func (t *DomainInfo) AddChild(child *DomainInfo) {
+	// Check if child already exists to avoid duplicates
+	for _, existingChild := range t.Children {
+		if existingChild.ID == child.ID {
+			return
+		}
+	}
+	t.Children = append(t.Children, child)
+}
+
+func calcDomainId(leafLevelIndex int, levels []kueuev1alpha1.TopologyLevel, nodeLabels map[string]string) DomainID {
 	domainsNames := make([]string, leafLevelIndex+1)
 	for levelIndex := leafLevelIndex; levelIndex >= 0; levelIndex-- {
 		levelLabel := levels[levelIndex].NodeLabel
-		levelDomainName, foundLevelOnNode := nodeLabels[levelLabel]
-		if !foundLevelOnNode {
-			levelDomainName = "missing"
-		}
-		domainsNames[levelIndex] = levelDomainName
+		domainsNames[levelIndex] = nodeLabels[levelLabel]
 	}
-	return TopologyDomainID(strings.Join(domainsNames, "."))
-}
-
-func (t *TopologyDomainInfo) AddNode(nodeInfo *node_info.NodeInfo) {
-	t.Nodes[nodeInfo.Node.Name] = nodeInfo
+	return DomainID(strings.Join(domainsNames, "."))
 }

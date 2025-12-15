@@ -18,6 +18,8 @@ import (
 
 const (
 	rayClusterKind = "RayCluster"
+
+	rayPriorityClassName = "ray.io/priority-class-name"
 )
 
 type RayGrouper struct {
@@ -47,7 +49,17 @@ func (rg *RayGrouper) getPodGroupMetadataWithClusterNamePath(
 		return nil, err
 	}
 
-	return rg.getPodGroupMetadataInternal(topOwner, rayClusterObj, pod)
+	podGroupMetadata, err := rg.getPodGroupMetadataInternal(topOwner, rayClusterObj, pod)
+	if err != nil {
+		return nil, err
+	}
+
+	// Ray has it's own way to specify the workload priority class
+	if rayPriorityClassName, labelFound := topOwner.GetLabels()[rayPriorityClassName]; labelFound {
+		podGroupMetadata.PriorityClassName = rayPriorityClassName
+	}
+
+	return podGroupMetadata, nil
 }
 
 func (rg *RayGrouper) getPodGroupMetadataInternal(
@@ -72,6 +84,11 @@ func (rg *RayGrouper) extractRayClusterObject(
 	topOwner *unstructured.Unstructured, rayClusterNamePaths [][]string) (
 	rayClusterObj *unstructured.Unstructured, err error,
 ) {
+	if len(rayClusterNamePaths) == 0 {
+		// If no rayClusterNamePaths are provided, use the topOwner as the rayClusterObj
+		return topOwner, nil
+	}
+
 	var found bool = false
 	var rayClusterName string
 	for pathIndex := 0; (pathIndex < len(rayClusterNamePaths)) && !found; pathIndex++ {
@@ -103,63 +120,107 @@ func (rg *RayGrouper) extractRayClusterObject(
 
 // These calculations are based on the way KubeRay creates volcano pod-groups
 // https://github.com/ray-project/kuberay/blob/dbcc686eabefecc3b939cd5c6e7a051f2473ad34/ray-operator/controllers/ray/batchscheduler/volcano/volcano_scheduler.go#L106
+// https://github.com/ray-project/kuberay/blob/dbcc686eabefecc3b939cd5c6e7a051f2473ad34/ray-operator/controllers/ray/batchscheduler/volcano/volcano_scheduler.go#L51
 func calcJobNumOfPods(topOwner *unstructured.Unstructured) (int32, error) {
-	minAvailableReplicas := int32(0)
+	minReplicas := int32(calcMinHeadReplicas(topOwner))
 
-	launcherMinReplicas, minReplicasFound, err := unstructured.NestedInt64(topOwner.Object,
-		"spec", "headGroupSpec", "minReplicas")
-	launcherReplicas, replicasFound, replicasErr := unstructured.NestedInt64(topOwner.Object,
-		"spec", "headGroupSpec", "replicas")
-	if err != nil || !minReplicasFound || launcherMinReplicas == 0 {
-		if replicasErr == nil && replicasFound && launcherReplicas > 0 {
-			launcherMinReplicas = launcherReplicas
-		} else {
-			launcherMinReplicas = 1 // Set default value 1
-		}
-	}
-	minAvailableReplicas += int32(launcherMinReplicas)
-
-	workerGroupSpecs, minReplicasFound, err := unstructured.NestedSlice(topOwner.Object,
+	workerGroupSpecs, workerSpecFound, err := unstructured.NestedSlice(topOwner.Object,
 		"spec", "workerGroupSpecs")
 	if err != nil {
 		return 0, err
 	}
-	if !minReplicasFound || len(workerGroupSpecs) == 0 {
-		return minAvailableReplicas, nil
+	if !workerSpecFound || len(workerGroupSpecs) == 0 {
+		return minReplicas, nil
 	}
 
 	for groupIndex, groupSpec := range workerGroupSpecs {
-		groupMinReplicas, err := getReplicaCountersForWorkerGroup(groupSpec, groupIndex)
-		minAvailableReplicas += int32(groupMinReplicas)
-
+		groupMinReplicas, groupDesiredReplicas, err := getReplicaCountersForWorkerGroup(groupSpec, groupIndex)
 		if err != nil {
 			return 0, err
 		}
+		if groupMinReplicas == 0 && groupDesiredReplicas == 0 {
+			continue // This type of worker doesn't contribute for minReplicas
+		}
+
+		numOfHosts, err := getGroupNumOfHosts(groupSpec)
+		if err != nil {
+			return 0, err
+		}
+
+		if groupMinReplicas > 0 {
+			// if minReplicas is set, use it to calculate the min number for workload scheduling
+			minReplicas += int32(groupMinReplicas * numOfHosts)
+		} else {
+			// if minReplicas is not set, use the desiredReplicas field to calculate the min number for workload scheduling
+			minReplicas += int32(groupDesiredReplicas * numOfHosts)
+		}
 	}
 
-	return minAvailableReplicas, nil
+	return minReplicas, nil
 }
 
-func getReplicaCountersForWorkerGroup(groupSpec interface{}, groupIndex int) (int64, error) {
+func getGroupNumOfHosts(groupSpec interface{}) (int64, error) {
+	numOfHosts, found, err := unstructured.NestedInt64(groupSpec.(map[string]interface{}), "numOfHosts")
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		numOfHosts = 1
+	}
+	return numOfHosts, nil
+}
+
+func getReplicaCountersForWorkerGroup(groupSpec interface{}, groupIndex int) (
+	minReplicas int64, desiredReplicas int64, err error) {
+	var found bool
 	workerGroupSpec := groupSpec.(map[string]interface{})
 
-	workerGroupReplicas, found, err := unstructured.NestedInt64(workerGroupSpec, "replicas")
+	suspendedWorkerGroup, found, err := unstructured.NestedBool(workerGroupSpec, "suspended")
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	if !found || workerGroupReplicas == 0 {
-		return 0, nil
+	if found && suspendedWorkerGroup {
+		return 0, 0, nil
 	}
 
-	workerGroupMinReplicas, found, err := unstructured.NestedInt64(workerGroupSpec, "minReplicas")
+	desiredReplicas, found, err = unstructured.NestedInt64(workerGroupSpec, "replicas")
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	if !found || workerGroupMinReplicas > workerGroupReplicas {
-		return 0, fmt.Errorf(
+	if !found {
+		desiredReplicas = 0
+	}
+
+	minReplicas, found, err = unstructured.NestedInt64(workerGroupSpec, "minReplicas")
+	if err != nil {
+		return 0, 0, err
+	}
+	if !found {
+		minReplicas = 0
+	}
+	if minReplicas > desiredReplicas {
+		return 0, 0, fmt.Errorf(
 			"ray-cluster replicas for a workerGroupsSpec can't be less than minReplicas. "+
 				"Given %v replicas and %v minReplicas. Please fix the replicas field for group number %v",
-			workerGroupReplicas, workerGroupMinReplicas, groupIndex)
+			desiredReplicas, minReplicas, groupIndex)
 	}
-	return workerGroupMinReplicas, nil
+	return minReplicas, desiredReplicas, nil
+}
+
+func calcMinHeadReplicas(topOwner *unstructured.Unstructured) int64 {
+	minHeadReplicas := int64(1) // default value 1
+
+	launcherReplicas, replicasFound, replicasErr := unstructured.NestedInt64(topOwner.Object,
+		"spec", "headGroupSpec", "replicas")
+	if replicasErr == nil && replicasFound && launcherReplicas > 0 {
+		minHeadReplicas = launcherReplicas
+	}
+
+	launcherMinReplicas, minReplicasFound, err := unstructured.NestedInt64(topOwner.Object,
+		"spec", "headGroupSpec", "minReplicas")
+	if err == nil && minReplicasFound && launcherMinReplicas > 0 {
+		minHeadReplicas = launcherMinReplicas
+	}
+
+	return minHeadReplicas
 }

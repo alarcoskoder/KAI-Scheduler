@@ -27,9 +27,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	schedulingv1alpha2 "github.com/NVIDIA/KAI-scheduler/pkg/apis/scheduling/v1alpha2"
+	"github.com/NVIDIA/KAI-scheduler/pkg/common/constants"
 
-	admissionplugins "github.com/NVIDIA/KAI-scheduler/pkg/admission/plugins"
-	"github.com/NVIDIA/KAI-scheduler/pkg/admission/webhook/v1alpha2/gpusharing"
 	"github.com/NVIDIA/KAI-scheduler/pkg/binder/binding"
 	"github.com/NVIDIA/KAI-scheduler/pkg/binder/binding/resourcereservation"
 	"github.com/NVIDIA/KAI-scheduler/pkg/binder/controllers"
@@ -67,12 +66,12 @@ var _ = BeforeSuite(func() {
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "..", "deployments", "crds", "internal")},
+		CRDDirectoryPaths: []string{
+			filepath.Join("..", "..", "..", "..", "deployments", "kai-scheduler", "crds"),
+			filepath.Join("..", "..", "..", "..", "deployments", "external-crds"),
+		},
 		ErrorIfCRDPathMissing: true,
 	}
-
-	// Add the kueue crd to the test environment
-	testEnv.CRDDirectoryPaths = append(testEnv.CRDDirectoryPaths, filepath.Join("..", "..", "..", "..", "deployments", "crds", "external"))
 
 	var err error
 	// cfg is defined in this file globally.
@@ -112,17 +111,15 @@ var _ = BeforeSuite(func() {
 	informerFactory := informers.NewSharedInformerFactory(kubeClient, 0)
 
 	binderPlugins := plugins.New()
-	admissionPlugins := admissionplugins.New()
 	k8sPlugins, err := k8s_plugins.New(kubeClient, informerFactory, int64(options.VolumeBindingTimeoutSeconds))
 	Expect(err).NotTo(HaveOccurred())
 	binderPlugins.RegisterPlugin(k8sPlugins)
 	clientWithWatch, err := client.NewWithWatch(cfg, client.Options{})
 	Expect(err).NotTo(HaveOccurred())
-	gpuSharingPlugin := gpusharing.New(clientWithWatch, options.GpuCdiEnabled, options.GPUSharingEnabled)
-	admissionPlugins.RegisterPlugin(gpuSharingPlugin)
 
 	rrs := resourcereservation.NewService(false, clientWithWatch, "", 40*time.Second,
-		resourceReservationNameSpace, resourceReservationServiceAccount, resourceReservationAppLabelValue, scalingPodsNamespace)
+		resourceReservationNameSpace, resourceReservationServiceAccount, resourceReservationAppLabelValue, scalingPodsNamespace, constants.DefaultRuntimeClassName,
+		nil) // nil podResources to use defaults
 	podBinder := binding.NewBinder(k8sManager.GetClient(), rrs, binderPlugins)
 
 	err = controllers.NewBindRequestReconciler(

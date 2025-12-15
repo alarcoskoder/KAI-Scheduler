@@ -24,38 +24,39 @@ import (
 
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
-)
 
-type SchedulingNodePoolParams struct {
-	NodePoolLabelKey   string
-	NodePoolLabelValue string
-}
+	usagedbapi "github.com/NVIDIA/KAI-scheduler/pkg/scheduler/cache/usagedb/api"
+)
 
 type SchedulerParams struct {
 	SchedulerName                     string                    `json:"schedulerName,omitempty"`
 	RestrictSchedulingNodes           bool                      `json:"restrictSchedulingNodes,omitempty"`
 	PartitionParams                   *SchedulingNodePoolParams `json:"partitionParams,omitempty"`
-	IsInferencePreemptible            bool                      `json:"isInferencePreemptible,omitempty"`
 	MaxNumberConsolidationPreemptees  int                       `json:"maxNumberConsolidationPreemptees,omitempty"`
 	ScheduleCSIStorage                bool                      `json:"scheduleCSIStorage,omitempty"`
 	UseSchedulingSignatures           bool                      `json:"useSchedulingSignatures,omitempty"`
 	FullHierarchyFairness             bool                      `json:"fullHierarchyFairness,omitempty"`
-	NodeLevelScheduler                bool                      `json:"nodeLevelScheduler,omitempty"`
 	AllowConsolidatingReclaim         bool                      `json:"allowConsolidatingReclaim,omitempty"`
 	NumOfStatusRecordingWorkers       int                       `json:"numOfStatusRecordingWorkers,omitempty"`
 	GlobalDefaultStalenessGracePeriod time.Duration             `json:"globalDefaultStalenessGracePeriod,omitempty"`
 	SchedulePeriod                    time.Duration             `json:"schedulePeriod,omitempty"`
 	DetailedFitErrors                 bool                      `json:"detailedFitErrors,omitempty"`
+	UpdatePodEvictionCondition        bool                      `json:"updatePodEvictionCondition,omitempty"`
 }
 
 // SchedulerConfiguration defines the configuration of scheduler.
 type SchedulerConfiguration struct {
 	// Actions defines the actions list of scheduler in order
 	Actions string `yaml:"actions" json:"actions"`
+
 	// Tiers defines plugins in different tiers
 	Tiers []Tier `yaml:"tiers,omitempty" json:"tiers,omitempty"`
+
 	// QueueDepthPerAction max number of jobs to try for action per queue
 	QueueDepthPerAction map[string]int `yaml:"queueDepthPerAction,omitempty" json:"queueDepthPerAction,omitempty"`
+
+	// UsageDBConfig defines configuration for the usage db client
+	UsageDBConfig *usagedbapi.UsageDBConfig `yaml:"usageDBConfig,omitempty" json:"usageDBConfig,omitempty"`
 }
 
 // Tier defines plugin tier
@@ -68,21 +69,26 @@ type PluginOption struct {
 	// The name of Plugin
 	Name string `yaml:"name" json:"name"`
 	// JobOrderDisabled defines whether jobOrderFn is disabled
-	JobOrderDisabled bool `yaml:"disableJobOrder" json:"disableJobOrder"`
+	JobOrderDisabled bool `yaml:"disableJobOrder,omitempty" json:"disableJobOrder,omitempty"`
 	// TaskOrderDisabled defines whether taskOrderFn is disabled
-	TaskOrderDisabled bool `yaml:"disableTaskOrder" json:"disableTaskOrder"`
+	TaskOrderDisabled bool `yaml:"disableTaskOrder,omitempty" json:"disableTaskOrder,omitempty"`
 	// PreemptableDisabled defines whether preemptableFn is disabled
-	PreemptableDisabled bool `yaml:"disablePreemptable" json:"disablePreemptable"`
+	PreemptableDisabled bool `yaml:"disablePreemptable,omitempty" json:"disablePreemptable,omitempty"`
 	// ReclaimableDisabled defines whether reclaimableFn is disabled
-	ReclaimableDisabled bool `yaml:"disableReclaimable" json:"disableReclaimable"`
+	ReclaimableDisabled bool `yaml:"disableReclaimable,omitempty" json:"disableReclaimable,omitempty"`
 	// QueueOrderDisabled defines whether queueOrderFn is disabled
-	QueueOrderDisabled bool `yaml:"disableQueueOrder" json:"disableQueueOrder"`
+	QueueOrderDisabled bool `yaml:"disableQueueOrder,omitempty" json:"disableQueueOrder,omitempty"`
 	// PredicateDisabled defines whether predicateFn is disabled
-	PredicateDisabled bool `yaml:"disablePredicate" json:"disablePredicate"`
+	PredicateDisabled bool `yaml:"disablePredicate,omitempty" json:"disablePredicate,omitempty"`
 	// NodeOrderDisabled defines whether NodeOrderFn is disabled
-	NodeOrderDisabled bool `yaml:"disableNodeOrder" json:"disableNodeOrder"`
+	NodeOrderDisabled bool `yaml:"disableNodeOrder,omitempty" json:"disableNodeOrder,omitempty"`
 	// Arguments defines the different arguments that can be given to different plugins
-	Arguments map[string]string `yaml:"arguments" json:"arguments"`
+	Arguments map[string]string `yaml:"arguments,omitempty" json:"arguments,omitempty"`
+}
+
+type SchedulingNodePoolParams struct {
+	NodePoolLabelKey   string
+	NodePoolLabelValue string
 }
 
 func (s *SchedulingNodePoolParams) GetLabelSelector() (labels.Selector, error) {

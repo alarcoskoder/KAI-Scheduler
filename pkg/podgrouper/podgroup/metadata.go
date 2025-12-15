@@ -3,17 +3,30 @@
 
 package podgroup
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	"github.com/NVIDIA/KAI-scheduler/pkg/apis/scheduling/v2alpha2"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+)
+
+type SubGroupMetadata struct {
+	Name           string
+	MinAvailable   int32
+	Parent         *string
+	PodsReferences []*types.NamespacedName
+}
 
 type Metadata struct {
 	Annotations       map[string]string
 	Labels            map[string]string
 	PriorityClassName string
+	Preemptibility    v2alpha2.Preemptibility
 	Queue             string
 	Namespace         string
 	Name              string
 	MinAvailable      int32
 	Owner             metav1.OwnerReference
+	SubGroups         []*SubGroupMetadata
 
 	PreferredTopologyLevel string
 	RequiredTopologyLevel  string

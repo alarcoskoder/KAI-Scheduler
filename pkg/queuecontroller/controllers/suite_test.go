@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -71,12 +72,12 @@ var _ = BeforeSuite(func() {
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "deployments", "crds", "internal")},
+		CRDDirectoryPaths: []string{
+			filepath.Join("..", "..", "..", "deployments", "kai-scheduler", "crds"),
+			filepath.Join("..", "..", "..", "deployments", "external-crds"),
+		},
 		ErrorIfCRDPathMissing: true,
 	}
-
-	// Add the kueue crd to the test environment
-	testEnv.CRDDirectoryPaths = append(testEnv.CRDDirectoryPaths, filepath.Join("..", "..", "..", "deployments", "crds", "external"))
 
 	var err error
 	cfg, err = testEnv.Start()
@@ -118,6 +119,9 @@ var _ = Describe("QueueController", Ordered, func() {
 		var err error
 		mgr, err = ctrl.NewManager(cfg, ctrl.Options{
 			Scheme: scheme.Scheme,
+			Metrics: metricsserver.Options{
+				BindAddress: "0",
+			},
 		})
 		Expect(err).ToNot(HaveOccurred())
 
@@ -126,12 +130,13 @@ var _ = Describe("QueueController", Ordered, func() {
 			Scheme: mgr.GetScheme(),
 		}
 
-		err = controller.SetupWithManager(mgr, "kai.scheduler/queue")
+		err = controller.SetupWithManager(mgr, "kai.scheduler/queue", false)
 		Expect(err).ToNot(HaveOccurred())
 
 		managerDone = make(chan struct{})
 		go func() {
 			defer close(managerDone)
+			defer GinkgoRecover()
 			err := mgr.Start(ctx)
 			Expect(err).ToNot(HaveOccurred())
 		}()

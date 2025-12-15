@@ -7,6 +7,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	kubeaischedulerver "github.com/NVIDIA/KAI-scheduler/pkg/apis/client/clientset/versioned/fake"
 	"github.com/NVIDIA/KAI-scheduler/pkg/common/constants"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/node_info"
@@ -14,7 +16,6 @@ import (
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/cache"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/conf"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/framework"
-	"github.com/stretchr/testify/assert"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -131,8 +132,8 @@ func TestTopologyPlugin_initializeTopologyTree(t *testing.T) {
 		DetailedFitErrors:           false,
 		ScheduleCSIStorage:          false,
 		FullHierarchyFairness:       true,
-		NodeLevelScheduler:          false,
 		NumOfStatusRecordingWorkers: 1,
+		DiscoveryClient:             fakeKubeClient.Discovery(),
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -159,16 +160,22 @@ func TestTopologyPlugin_initializeTopologyTree(t *testing.T) {
 			testNodes[0].Name: {
 				Node:        testNodes[0],
 				Allocatable: resource_info.ResourceFromResourceList(testNodes[0].Status.Allocatable),
+				Idle:        resource_info.NewResource(500, 0, 0),
+				Releasing:   resource_info.NewResource(0, 0, 0),
 				Used:        resource_info.NewResource(500, 0, 1),
 			},
 			testNodes[1].Name: {
 				Node:        testNodes[1],
 				Allocatable: resource_info.ResourceFromResourceList(testNodes[1].Status.Allocatable),
+				Idle:        resource_info.NewResource(500, 0, 0),
+				Releasing:   resource_info.NewResource(0, 0, 0),
 				Used:        resource_info.NewResource(500, 0, 0),
 			},
 			testNodes[2].Name: {
 				Node:        testNodes[2],
 				Allocatable: resource_info.ResourceFromResourceList(testNodes[2].Status.Allocatable),
+				Idle:        resource_info.NewResource(0, 0, 0),
+				Releasing:   resource_info.NewResource(0, 0, 0),
 				Used:        resource_info.NewResource(1000, 0, 3),
 			},
 		},
@@ -182,27 +189,19 @@ func TestTopologyPlugin_initializeTopologyTree(t *testing.T) {
 	assert.Equal(t, 1, len(topologyTrees))
 	testTopologyObj := topologyTrees["test-topology"]
 	assert.Equal(t, "test-topology", testTopologyObj.Name)
-	assert.Equal(t, 2, len(testTopologyObj.DomainsByLevel))
+	assert.Equal(t, 3, len(testTopologyObj.DomainsByLevel))
 
 	blockDomains := testTopologyObj.DomainsByLevel["test-topology-label/block"]
 	rackDomains := testTopologyObj.DomainsByLevel["test-topology-label/rack"]
 
-	assert.Equal(t, "test-block-1", blockDomains["test-block-1"].Name)
-	assert.Equal(t, "test-topology-label/block", blockDomains["test-block-1"].Level)
-	assert.Equal(t, 1, blockDomains["test-block-1"].Depth)
+	assert.Equal(t, DomainLevel("test-topology-label/block"), blockDomains["test-block-1"].Level)
+	assert.Equal(t, 2, len(blockDomains["test-block-1"].Children))
 
-	assert.Equal(t, "test-rack-1", rackDomains["test-block-1.test-rack-1"].Name)
-	assert.Equal(t, "test-block-1", rackDomains["test-block-1.test-rack-1"].Parent.Name)
-	assert.Equal(t, 2, rackDomains["test-block-1.test-rack-1"].Depth)
+	assert.Equal(t, 0, len(rackDomains["test-block-1.test-rack-1"].Children))
 
-	assert.Equal(t, "test-rack-2", rackDomains["test-block-1.test-rack-2"].Name)
-	assert.Equal(t, "test-block-1", rackDomains["test-block-1.test-rack-2"].Parent.Name)
-	assert.Equal(t, 2, rackDomains["test-block-1.test-rack-2"].Depth)
+	assert.Equal(t, 0, len(rackDomains["test-block-1.test-rack-2"].Children))
 
-	assert.Equal(t, "test-block-2", blockDomains["test-block-2"].Name)
-	assert.Equal(t, 1, blockDomains["test-block-2"].Depth)
+	assert.Equal(t, 1, len(blockDomains["test-block-2"].Children))
 
-	assert.Equal(t, "test-rack-1", rackDomains["test-block-2.test-rack-1"].Name)
-	assert.Equal(t, "test-block-2", rackDomains["test-block-2.test-rack-1"].Parent.Name)
-	assert.Equal(t, 2, rackDomains["test-block-2.test-rack-1"].Depth)
+	assert.Equal(t, 0, len(rackDomains["test-block-2.test-rack-1"].Children))
 }

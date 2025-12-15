@@ -18,6 +18,8 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 
+	kueuev1alpha1 "sigs.k8s.io/kueue/apis/kueue/v1alpha1"
+
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/actions"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/common_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/pod_status"
@@ -31,7 +33,6 @@ import (
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/test_utils/dra_fake"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/test_utils/jobs_fake"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/test_utils/nodes_fake"
-	kueuev1alpha1 "sigs.k8s.io/kueue/apis/kueue/v1alpha1"
 )
 
 var SchedulerVerbosity = flag.String("vv", "", "Scheduler's verbosity")
@@ -123,12 +124,12 @@ func MatchExpectedAndRealTasks(t *testing.T, testNumber int, testMetadata TestTo
 		var sumOfJobRequestedGPU, sumOfJobRequestedMillisCpu, sumOfJobRequestedMemory, sumOfAcceptedGpus float64
 		job, found := ssn.PodGroupInfos[common_info.PodGroupID(jobName)]
 		if !found {
-			t.Errorf("Test number: %d, name: %v, has failed. Couldn't find job: %v for expected tasks.", testNumber, testMetadata.Name, jobName)
+			t.Errorf("Test number: %d, name: %s, has failed. Couldn't find job: %s for expected tasks.", testNumber, testMetadata.Name, jobName)
 		}
-		for _, taskInfo := range ssn.PodGroupInfos[common_info.PodGroupID(jobName)].PodInfos {
+		for _, taskInfo := range ssn.PodGroupInfos[common_info.PodGroupID(jobName)].GetAllPodsMap() {
 
 			if taskInfo.Status != jobExpectedResult.Status {
-				t.Errorf("Test number: %d, name: %v, has failed. Task name: %v, actual uses status: %v, was expecting status: %v", testNumber, testMetadata.Name, taskInfo.Name, taskInfo.Status, jobExpectedResult.Status.String())
+				t.Errorf("Test number: %d, name: %s, has failed. Task name: %s, actual uses status: %s, was expecting status: %s", testNumber, testMetadata.Name, taskInfo.Name, taskInfo.Status, jobExpectedResult.Status)
 				if jobExpectedResult.Status == pod_status.Running {
 					t.Errorf("%v", job.JobFitErrors)
 					t.Errorf("%v", job.NodesFitErrors)
@@ -136,7 +137,7 @@ func MatchExpectedAndRealTasks(t *testing.T, testNumber int, testMetadata TestTo
 			}
 
 			if len(jobExpectedResult.NodeName) > 0 && taskInfo.NodeName != jobExpectedResult.NodeName {
-				t.Errorf("Test number: %d, name: %v, has failed. Task name: %v, actual uses node: %v, was expecting node: %v", testNumber, testMetadata.Name, taskInfo.Name, taskInfo.NodeName, jobExpectedResult.NodeName)
+				t.Errorf("Test number: %d, name: %s, has failed. Task name: %s, actual uses node: %s, was expecting node: %s", testNumber, testMetadata.Name, taskInfo.Name, taskInfo.NodeName, jobExpectedResult.NodeName)
 			}
 
 			sumOfJobRequestedGPU += taskInfo.ResReq.GPUs()
@@ -196,7 +197,7 @@ func MatchExpectedAndRealTasks(t *testing.T, testNumber int, testMetadata TestTo
 
 	if len(testMetadata.TaskExpectedResults) > 0 {
 		for jobId, job := range ssn.PodGroupInfos {
-			for taskId, task := range ssn.PodGroupInfos[jobId].PodInfos {
+			for taskId, task := range ssn.PodGroupInfos[jobId].GetAllPodsMap() {
 				taskExpectedResult, found := testMetadata.TaskExpectedResults[string(taskId)]
 				if !found {
 					continue
@@ -297,7 +298,10 @@ func MatchExpectedAndRealTasks(t *testing.T, testNumber int, testMetadata TestTo
 	}
 }
 
-func GetTestCacheMock(controller *Controller, testMocks *TestMock, additionalObjects []runtime.Object) *cache.MockCache {
+func GetTestCacheMock(
+	controller *Controller, testMocks *TestMock, additionalObjects []runtime.Object,
+	clusterPodAffinityInfo *cache.K8sClusterPodAffinityInfo,
+) *cache.MockCache {
 	cacheMock := cache.NewMockCache(controller)
 	cacheRequirements := &CacheMocking{}
 	if testMocks != nil {
@@ -313,16 +317,16 @@ func GetTestCacheMock(controller *Controller, testMocks *TestMock, additionalObj
 
 	informerFactory := informers.NewSharedInformerFactory(cacheMock.KubeClient(), 0)
 
-	informerFactory.Resource().V1beta1().ResourceClaims().Informer()
-	informerFactory.Resource().V1beta1().ResourceSlices().Informer()
-	informerFactory.Resource().V1beta1().DeviceClasses().Informer()
+	informerFactory.Resource().V1().ResourceClaims().Informer()
+	informerFactory.Resource().V1().ResourceSlices().Informer()
+	informerFactory.Resource().V1().DeviceClasses().Informer()
 
 	ctx := context.Background()
 	informerFactory.Start(ctx.Done())
 	informerFactory.WaitForCacheSync(ctx.Done())
 
 	cacheMock.EXPECT().KubeInformerFactory().AnyTimes().Return(informerFactory)
-	cacheMock.EXPECT().SnapshotSharedLister().AnyTimes().Return(cache.NewK8sClusterPodAffinityInfo())
+	cacheMock.EXPECT().SnapshotSharedLister().AnyTimes().Return(clusterPodAffinityInfo)
 
 	k8sPlugins := k8splugins.InitializeInternalPlugins(
 		cacheMock.KubeClient(), cacheMock.KubeInformerFactory(), cacheMock.SnapshotSharedLister(),

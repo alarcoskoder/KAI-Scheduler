@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/types"
+	ksf "k8s.io/kube-scheduler/framework"
 	kueuev1alpha1 "sigs.k8s.io/kueue/apis/kueue/v1alpha1"
 
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api"
@@ -50,12 +51,13 @@ import (
 var server *PluginServer
 
 type Session struct {
-	UID   types.UID
+	ID    string
 	Cache cache.Cache
 
 	PodGroupInfos map[common_info.PodGroupID]*podgroup_info.PodGroupInfo
 	Nodes         map[string]*node_info.NodeInfo
 	Queues        map[common_info.QueueID]*queue_info.QueueInfo
+	ResourceUsage queue_info.ClusterUsage
 	ConfigMaps    map[common_info.ConfigMapID]*configmap_info.ConfigMapInfo
 	Topologies    []*kueuev1alpha1.Topology
 
@@ -63,7 +65,8 @@ type Session struct {
 	NodePreOrderFns                       []api.NodePreOrderFn
 	NodeOrderFns                          []api.NodeOrderFn
 	JobOrderFns                           []common_info.CompareFn
-	SubGroupsOrderFns                     []common_info.CompareFn
+	PodSetOrderFns                        []common_info.CompareFn
+	SubGroupSetOrderFns                   []common_info.CompareFn
 	TaskOrderFns                          []common_info.CompareFn
 	QueueOrderFns                         []CompareQueueFn
 	CanReclaimResourcesFns                []api.CanReclaimResourcesFn
@@ -78,9 +81,11 @@ type Session struct {
 	IsNonPreemptibleJobOverQueueQuotaFns  []api.IsJobOverCapacityFn
 	IsJobOverCapacityFns                  []api.IsJobOverCapacityFn
 	IsTaskAllocationOnNodeOverCapacityFns []api.IsTaskAllocationOverCapacityFn
+	SubsetNodesFns                        []api.SubsetNodesFn
 	PrePredicateFns                       []api.PrePredicateFn
 	PredicateFns                          []api.PredicateFn
 	BindRequestMutateFns                  []api.BindRequestMutateFn
+	PreJobAllocationFns                   []api.PreJobAllocationFn
 
 	Config          *conf.SchedulerConfiguration
 	plugins         map[string]Plugin
@@ -88,23 +93,26 @@ type Session struct {
 	SchedulerParams conf.SchedulerParams
 	mux             *http.ServeMux
 
-	k8sPodState map[types.UID]k8s_internal.SessionState
+	k8sResourceStateCache sync.Map
 }
 
 func (ssn *Session) Statement() *Statement {
-	return &Statement{ssn: ssn, sessionUID: ssn.UID}
+	return &Statement{ssn: ssn, sessionID: ssn.ID}
 }
 
-func (ssn *Session) GetK8sStateForPod(uid types.UID) k8s_internal.SessionState {
-	if ssn.k8sPodState == nil {
-		ssn.k8sPodState = make(map[types.UID]k8s_internal.SessionState)
+func (ssn *Session) GetSessionStateForResource(uid types.UID) k8s_internal.SessionState {
+	state, _ := ssn.k8sResourceStateCache.LoadOrStore(uid, k8s_internal.NewSessionState())
+	return state.(k8s_internal.SessionState)
+}
+
+func (ssn *Session) GetNodes() []ksf.NodeInfo {
+	nodes, err := ssn.Cache.SnapshotSharedLister().List()
+	if err != nil {
+		log.InfraLogger.Errorf("Failed to list nodes: ", err)
+		return nil
 	}
-	state, found := ssn.k8sPodState[uid]
-	if found {
-		return state
-	}
-	ssn.k8sPodState[uid] = k8s_internal.NewSessionState()
-	return ssn.k8sPodState[uid]
+
+	return nodes
 }
 
 func (ssn *Session) BindPod(pod *pod_info.PodInfo) error {
@@ -274,7 +282,7 @@ func (ssn *Session) isTaskAllocatableOnNode(task *pod_info.PodInfo, job *podgrou
 			task.Namespace, task.Name, task.ResReq, node.Name, node.Releasing, node.Idle)
 		if writeFittingDelta {
 			if taskAllocatable := node.IsTaskAllocatable(task); !taskAllocatable {
-				fitError = node.FittingError(task, len(job.PodInfos) > 1)
+				fitError = node.FittingError(task, len(job.GetAllPodsMap()) > 1)
 			}
 		}
 	}
@@ -282,7 +290,7 @@ func (ssn *Session) isTaskAllocatableOnNode(task *pod_info.PodInfo, job *podgrou
 }
 
 func (ssn *Session) String() string {
-	msg := fmt.Sprintf("Session %v: \n", ssn.UID)
+	msg := fmt.Sprintf("Session %v: \n", ssn.ID)
 
 	for _, job := range ssn.PodGroupInfos {
 		msg = fmt.Sprintf("%s%v\n", msg, job)
@@ -305,7 +313,7 @@ func (ssn *Session) updatePodOnNode(pod *pod_info.PodInfo) error {
 	err := node.UpdateTask(pod)
 	if err != nil {
 		log.InfraLogger.Errorf("Failed to update task <%v/%v> in Session <%v>: %v",
-			pod.Namespace, pod.Name, ssn.UID, err)
+			pod.Namespace, pod.Name, ssn.ID, err)
 	}
 	return err
 }
@@ -314,14 +322,14 @@ func (ssn *Session) updatePodOnSession(pod *pod_info.PodInfo, status pod_status.
 	job, found := ssn.PodGroupInfos[pod.Job]
 	if !found {
 		log.InfraLogger.Errorf("Failed to found Job <%s> in Session <%s> index when binding.",
-			pod.Job, ssn.UID)
+			pod.Job, ssn.ID)
 		return fmt.Errorf("failed to find job %s", pod.Job)
 	}
 
 	err := job.UpdateTaskStatus(pod, status)
 	if err != nil {
 		log.InfraLogger.Errorf("Failed to update task <%v/%v> status to %v in Session <%v>: %v",
-			pod.Namespace, pod.Name, status, ssn.UID, err)
+			pod.Namespace, pod.Name, status, ssn.ID, err)
 	}
 	return err
 }
@@ -332,13 +340,14 @@ func (ssn *Session) clear() {
 	ssn.plugins = nil
 	ssn.eventHandlers = nil
 	ssn.TaskOrderFns = nil
-	ssn.SubGroupsOrderFns = nil
+	ssn.PodSetOrderFns = nil
+	ssn.SubGroupSetOrderFns = nil
 	ssn.JobOrderFns = nil
 }
 
-func openSession(cache cache.Cache, sessionId types.UID, schedulerParams conf.SchedulerParams, mux *http.ServeMux) (*Session, error) {
+func openSession(cache cache.Cache, sessionId string, schedulerParams conf.SchedulerParams, mux *http.ServeMux) (*Session, error) {
 	ssn := &Session{
-		UID:   sessionId,
+		ID:    sessionId,
 		Cache: cache,
 
 		PodGroupInfos: map[common_info.PodGroupID]*podgroup_info.PodGroupInfo{},
@@ -346,10 +355,10 @@ func openSession(cache cache.Cache, sessionId types.UID, schedulerParams conf.Sc
 		Queues:        map[common_info.QueueID]*queue_info.QueueInfo{},
 		Topologies:    []*kueuev1alpha1.Topology{},
 
-		plugins:         map[string]Plugin{},
-		SchedulerParams: schedulerParams,
-		mux:             mux,
-		k8sPodState:     map[types.UID]k8s_internal.SessionState{},
+		plugins:               map[string]Plugin{},
+		SchedulerParams:       schedulerParams,
+		mux:                   mux,
+		k8sResourceStateCache: sync.Map{},
 	}
 
 	log.InfraLogger.V(2).Infof("Taking cluster snapshot ...")
@@ -361,18 +370,19 @@ func openSession(cache cache.Cache, sessionId types.UID, schedulerParams conf.Sc
 	ssn.PodGroupInfos = snapshot.PodGroupInfos
 	ssn.Nodes = snapshot.Nodes
 	ssn.Queues = snapshot.Queues
+	ssn.ResourceUsage = snapshot.QueueResourceUsage
 	ssn.ConfigMaps = snapshot.ConfigMaps
 	ssn.Topologies = snapshot.Topologies
 
 	log.InfraLogger.V(2).Infof("Session %v with <%d> Jobs, <%d> Queues and <%d> Nodes",
-		ssn.UID, len(ssn.PodGroupInfos), len(ssn.Queues), len(ssn.Nodes))
+		ssn.ID, len(ssn.PodGroupInfos), len(ssn.Queues), len(ssn.Nodes))
 
 	return ssn, nil
 }
 
 func closeSession(ssn *Session) {
 	log.InfraLogger.V(6).Infof("Close Session %v with <%d> Jobs and <%d> Queues",
-		ssn.UID, len(ssn.PodGroupInfos), len(ssn.Queues))
+		ssn.ID, len(ssn.PodGroupInfos), len(ssn.Queues))
 
 	// Push all jobs for status update into the channel
 	for _, job := range ssn.PodGroupInfos {
@@ -385,7 +395,7 @@ func closeSession(ssn *Session) {
 	stopCh := make(chan struct{})
 	ssn.Cache.WaitForWorkers(stopCh)
 
-	log.InfraLogger.V(6).Infof("Done updating job statuses for session: %v", ssn.UID)
+	log.InfraLogger.V(6).Infof("Done updating job statuses for session: %v", ssn.ID)
 }
 
 func (ssn *Session) GetMaxNumberConsolidationPreemptees() int {
@@ -394,15 +404,6 @@ func (ssn *Session) GetMaxNumberConsolidationPreemptees() int {
 
 func (ssn *Session) OverrideMaxNumberConsolidationPreemptees(maxPreemptees int) {
 	ssn.SchedulerParams.MaxNumberConsolidationPreemptees = maxPreemptees
-}
-
-func (ssn *Session) IsInferencePreemptible() bool {
-	return ssn.SchedulerParams.IsInferencePreemptible
-}
-
-// OverrideInferencePreemptible overrides the value returned by IsInferencePreemptible. Use for testing purposes.
-func (ssn *Session) OverrideInferencePreemptible(isInferencePreemptible bool) {
-	ssn.SchedulerParams.IsInferencePreemptible = isInferencePreemptible
 }
 
 func (ssn *Session) UseSchedulingSignatures() bool {

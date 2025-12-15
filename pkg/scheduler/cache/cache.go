@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	corev1 "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -43,6 +44,8 @@ import (
 	enginelisters "github.com/NVIDIA/KAI-scheduler/pkg/apis/client/listers/scheduling/v2alpha2"
 	schedulingv1alpha2 "github.com/NVIDIA/KAI-scheduler/pkg/apis/scheduling/v1alpha2"
 	enginev2alpha2 "github.com/NVIDIA/KAI-scheduler/pkg/apis/scheduling/v2alpha2"
+	featuregates "github.com/NVIDIA/KAI-scheduler/pkg/common/feature_gates"
+	draversionawareclient "github.com/NVIDIA/KAI-scheduler/pkg/common/resources/dra_version_aware_client"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/bindrequest_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/eviction_info"
@@ -52,6 +55,8 @@ import (
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/cache/cluster_info/data_lister"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/cache/evictor"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/cache/status_updater"
+	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/cache/usagedb"
+	usageapi "github.com/NVIDIA/KAI-scheduler/pkg/scheduler/cache/usagedb/api"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/conf"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/constants/status"
 	k8splugins "github.com/NVIDIA/KAI-scheduler/pkg/scheduler/k8s_internal/plugins"
@@ -82,12 +87,15 @@ type SchedulerCacheParams struct {
 	KubeClient                  kubernetes.Interface
 	KAISchedulerClient          kubeaischedulerver.Interface
 	KueueClient                 kueueclient.Interface
+	UsageDBParams               *usageapi.UsageParams
+	UsageDBClient               usageapi.Interface
 	DetailedFitErrors           bool
 	ScheduleCSIStorage          bool
 	FullHierarchyFairness       bool
-	NodeLevelScheduler          bool
 	AllowConsolidatingReclaim   bool
 	NumOfStatusRecordingWorkers int
+	UpdatePodEvictionCondition  bool
+	DiscoveryClient             discovery.DiscoveryInterface
 }
 
 type SchedulerCache struct {
@@ -101,6 +109,7 @@ type SchedulerCache struct {
 	podLister                      listv1.PodLister
 	podGroupLister                 enginelisters.PodGroupLister
 	clusterInfo                    *cluster_info.ClusterInfo
+	usageLister                    *usagedb.UsageLister
 
 	schedulingNodePoolParams *conf.SchedulingNodePoolParams
 
@@ -124,7 +133,7 @@ func newSchedulerCache(schedulerCacheParams *SchedulerCacheParams) *SchedulerCac
 		detailedFitErrors:        schedulerCacheParams.DetailedFitErrors,
 		scheduleCSIStorage:       schedulerCacheParams.ScheduleCSIStorage,
 		fullHierarchyFairness:    schedulerCacheParams.FullHierarchyFairness,
-		kubeClient:               schedulerCacheParams.KubeClient,
+		kubeClient:               draversionawareclient.NewDRAAwareClient(schedulerCacheParams.KubeClient),
 		kubeAiSchedulerClient:    schedulerCacheParams.KAISchedulerClient,
 		kueueClient:              schedulerCacheParams.KueueClient,
 	}
@@ -139,7 +148,7 @@ func newSchedulerCache(schedulerCacheParams *SchedulerCacheParams) *SchedulerCac
 	broadcaster.StartRecordingToSink(&corev1.EventSinkImpl{Interface: sc.kubeClient.CoreV1().Events("")})
 	recorder := broadcaster.NewRecorder(kubeaischedulerschema.Scheme, v1.EventSource{Component: schedulerName})
 
-	sc.Evictor = evictor.New(sc.kubeClient)
+	sc.Evictor = evictor.New(sc.kubeClient, schedulerCacheParams.UpdatePodEvictionCondition)
 
 	sc.StatusUpdater = status_updater.New(
 		sc.kubeClient, sc.kubeAiSchedulerClient, recorder, schedulerCacheParams.NumOfStatusRecordingWorkers,
@@ -150,12 +159,22 @@ func newSchedulerCache(schedulerCacheParams *SchedulerCacheParams) *SchedulerCac
 	sc.kubeAiSchedulerInformerFactory = kubeaischedulerinfo.NewSharedInformerFactory(sc.kubeAiSchedulerClient, 0)
 	sc.kueueInformerFactory = kueue.NewSharedInformerFactory(sc.kueueClient, 0)
 
+	if err := featuregates.SetDRAFeatureGate(schedulerCacheParams.DiscoveryClient); err != nil {
+		log.InfraLogger.Warningf("Failed to set DRA feature gate: ", err)
+	}
 	sc.internalPlugins = k8splugins.InitializeInternalPlugins(sc.kubeClient, sc.informerFactory, sc.SnapshotSharedLister())
 
 	sc.podLister = sc.informerFactory.Core().V1().Pods().Lister()
 	sc.podGroupLister = sc.kubeAiSchedulerInformerFactory.Scheduling().V2alpha2().PodGroups().Lister()
 
-	clusterInfo, err := cluster_info.New(sc.informerFactory, sc.kubeAiSchedulerInformerFactory, sc.kueueInformerFactory, sc.schedulingNodePoolParams,
+	if schedulerCacheParams.UsageDBClient != nil {
+		sc.usageLister = usagedb.NewUsageLister(schedulerCacheParams.UsageDBClient,
+			&schedulerCacheParams.UsageDBParams.FetchInterval.Duration,
+			&schedulerCacheParams.UsageDBParams.StalenessPeriod.Duration,
+			&schedulerCacheParams.UsageDBParams.WaitTimeout.Duration)
+	}
+
+	clusterInfo, err := cluster_info.New(sc.informerFactory, sc.kubeAiSchedulerInformerFactory, sc.kueueInformerFactory, sc.usageLister, sc.schedulingNodePoolParams,
 		sc.restrictNodeScheduling, &sc.K8sClusterPodAffinityInfo, sc.scheduleCSIStorage, sc.fullHierarchyFairness, sc.StatusUpdater)
 
 	if err != nil {
@@ -188,12 +207,20 @@ func (sc *SchedulerCache) Run(stopCh <-chan struct{}) {
 	sc.kubeAiSchedulerInformerFactory.Start(stopCh)
 	sc.kueueInformerFactory.Start(stopCh)
 	sc.StatusUpdater.Run(stopCh)
+
+	if sc.usageLister != nil {
+		sc.usageLister.Start(stopCh)
+	}
 }
 
 func (sc *SchedulerCache) WaitForCacheSync(stopCh <-chan struct{}) {
 	sc.informerFactory.WaitForCacheSync(stopCh)
 	sc.kubeAiSchedulerInformerFactory.WaitForCacheSync(stopCh)
 	sc.kueueInformerFactory.WaitForCacheSync(stopCh)
+
+	if sc.usageLister != nil {
+		sc.usageLister.WaitForCacheSync(stopCh)
+	}
 }
 
 func (sc *SchedulerCache) Evict(evictedPod *v1.Pod, evictedPodGroup *podgroup_info.PodGroupInfo,
@@ -227,7 +254,7 @@ func (sc *SchedulerCache) evict(evictedPod *v1.Pod, evictedPodGroup *enginev2alp
 
 		log.InfraLogger.V(6).Infof("Evicting pod %v/%v, reason: %v, message: %v",
 			evictedPod.Namespace, evictedPod.Name, status.Preempted, message)
-		err := sc.Evictor.Evict(evictedPod)
+		err := sc.Evictor.Evict(evictedPod, message)
 		if err != nil {
 			log.InfraLogger.Errorf("Failed to evict pod: %v/%v, error: %v", evictedPod.Namespace, evictedPod.Name, err)
 		}
@@ -421,5 +448,5 @@ func (sc *SchedulerCache) GetDataLister() data_lister.DataLister {
 		log.InfraLogger.Errorf("Failed to get label selector: %v", err)
 		return nil
 	}
-	return data_lister.New(sc.informerFactory, sc.kubeAiSchedulerInformerFactory, sc.kueueInformerFactory, selector)
+	return data_lister.New(sc.informerFactory, sc.kubeAiSchedulerInformerFactory, sc.kueueInformerFactory, sc.usageLister, selector)
 }

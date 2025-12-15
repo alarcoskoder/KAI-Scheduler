@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/utils/pointer"
 
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api"
@@ -1113,8 +1113,8 @@ func Test_predicatesPlugin_evaluateTaskOnPredicates(t *testing.T) {
 			skipPredicates := SkipPredicates{}
 
 			jobsMap, tasksMap, _ := jobs_fake.BuildJobsAndTasksMaps(tt.clusterData.jobs)
-			nodesMap := nodes_fake.BuildNodesInfoMap(tt.clusterData.nodes, tasksMap)
-			task := jobsMap[tt.args.jobName].PodInfos[tt.args.taskName]
+			nodesMap := nodes_fake.BuildNodesInfoMap(tt.clusterData.nodes, tasksMap, nil)
+			task := jobsMap[tt.args.jobName].GetAllPodsMap()[tt.args.taskName]
 			job := jobsMap[tt.args.jobName]
 			node := nodesMap[tt.args.nodeName]
 

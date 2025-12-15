@@ -45,10 +45,10 @@ func TestAddFlags(t *testing.T) {
 
 	// This is a snapshot of expected options parsed by args.
 	expected := &ServerOption{
-		SchedulerName:                     defaultSchedulerName,
-		Namspace:                          defaultNamespace,
+		SchedulerName:                     constants.DefaultSchedulerName,
+		Namspace:                          constants.DefaultKAINamespace,
 		MetricsNamespace:                  constants.DefaultMetricsNamespace,
-		ResourceReservationAppLabel:       defaultResourceReservationAppLabel,
+		ResourceReservationAppLabel:       constants.DefaultResourceReservationName,
 		SchedulePeriod:                    5 * time.Minute,
 		PrintVersion:                      true,
 		ListenAddress:                     defaultListenAddress,
@@ -59,30 +59,27 @@ func TestAddFlags(t *testing.T) {
 		QPS:                               50,
 		Burst:                             300,
 		DetailedFitErrors:                 false,
+		UpdatePodEvictionCondition:        false,
 		UseSchedulingSignatures:           true,
-		NodeLevelScheduler:                false,
 		AllowConsolidatingReclaim:         true,
 		PyroscopeBlockProfilerRate:        DefaultPyroscopeBlockProfilerRate,
 		PyroscopeMutexProfilerRate:        DefaultPyroscopeMutexProfilerRate,
 		GlobalDefaultStalenessGracePeriod: defaultStalenessGracePeriod,
 		NumOfStatusRecordingWorkers:       defaultNumOfStatusRecordingWorkers,
-		NodePoolLabelKey:                  defaultNodePoolLabelKey,
+		NodePoolLabelKey:                  constants.DefaultNodePoolLabelKey,
 		PluginServerPort:                  8081,
-		CPUWorkerNodeLabelKey:             defaultCPUWorkerNodeLabelKey,
-		GPUWorkerNodeLabelKey:             defaultGPUWorkerNodeLabelKey,
-		MIGWorkerNodeLabelKey:             defaultMIGWorkerNodeLabelKey,
+		CPUWorkerNodeLabelKey:             constants.DefaultCPUWorkerNodeLabelKey,
+		GPUWorkerNodeLabelKey:             constants.DefaultGPUWorkerNodeLabelKey,
+		MIGWorkerNodeLabelKey:             constants.DefaultMIGWorkerNodeLabelKey,
 	}
 
 	if !reflect.DeepEqual(expected, s) {
-		difference := diff.ObjectDiff(expected, s)
+		difference := diff.ObjectGoPrintSideBySide(expected, s)
 		t.Errorf("Got different run options than expected.\nGot: %+v\nExpected: %+v\ndiff: %s", s, expected, difference)
 	}
 
 	// Test that the feature gates are set correctly.
 	if !utilfeature.DefaultFeatureGate.Enabled(features.DynamicResourceAllocation) {
 		t.Errorf("DynamicResourceAllocation feature gate should be enabled")
-	}
-	if utilfeature.DefaultFeatureGate.Enabled(features.VolumeCapacityPriority) {
-		t.Errorf("VolumeCapacityPriority feature gate should be disabled")
 	}
 }

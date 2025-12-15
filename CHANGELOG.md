@@ -4,7 +4,117 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [v0.10.2] - 2025-12-09
+
+### Added
+- Added support for having the default "preemptibility" per top-owner-type read from the default configs configmap in the pod-grouper
+
+### Fixed
+- Fixed confusing resource division log message [#734](https://github.com/NVIDIA/KAI-Scheduler/pull/734) [itsomri](https://github.com/itsomri)
+
+## [v0.10.2] - 2025-11-24
+
+### Fixed
+- Removed the requirement to specify container type for init container gpu fractions [#684](https://github.com/NVIDIA/KAI-Scheduler/pull/684) [itsomri](https://github.com/itsomri)
+- When a status update for a podGroup in the scheduler is flushed due to update conflict, delete the update payload data as well [#691](https://github.com/NVIDIA/KAI-Scheduler/pull/691) [davidLif](https://github.com/davidLif)
+
+## [v0.10.1] - 2025-11-23
+
+### Fixed
+- Fixed scheduler pod group status update conflict [#676](https://github.com/NVIDIA/KAI-Scheduler/pull/676) [davidLif](https://github.com/davidLif) 
+- Fixed gpu request validations for pods [#660](https://github.com/NVIDIA/KAI-Scheduler/pull/660) [itsomri](https://github.com/itsomri)
+
+### Changed
+- Dependabot configuration to update actions in workflows [#651](https://github.com/NVIDIA/KAI-Scheduler/pull/651) [ScottBrenner](https://github.com/ScottBrenner)
+- optimize dependency management by using module cache instead of vendor directory [#645](https://github.com/NVIDIA/KAI-Scheduler/pull/645) [lokielse](https://github.com/lokielse)
+
+## [v0.10.0] - 2025-11-18
+
+### Added
+- Added parent reference to SubGroup struct in PodGroup CRD to create a hierarchical SubGroup structure
+- Added the option to configure the names of the webhook configuration resources.
+- Option to configure reservation pods runtime class.
+- Added a tool to run time-aware fairness simulations over multiple cycles (see [Time-Aware Fairness Simulator](cmd/time-aware-simulator/README.md))
+- Added enforcement of the `nvidia` runtime class for GPU pods, with the option to enforce a custom runtime class, or disable enforcement entirely.
+- Added a preferred podAntiAffinity term by default for all services, can be set to required instead by setting `global.requireDefaultPodAffinityTerm`
+- Added support for service-level affinities
+- Added [time aware scheduling](docs/timeaware/README.md) capabilities
+- Added option to specify container name and type for fraction containers
+
+### Fixed
+- (Openshift only) - High CPU usage for the operator pod due to continues reconciles
+- Fixed a bug where the scheduler would not re-try updating podgroup status after failure
+- Fixed a bug where ray workloads gang scheduling would ignore `minReplicas` if autoscaling was not set
+- KAI Config wrong statuses when prometheus operand is enabled
+- GPU-Operator v25.10.0 support for CDI enabled environments
+
+## [v0.9.1] - 20250-09-15
+
+### Added
+- Added the option of providing the podgrouper app a scheme object to use
+
+## [v0.9.0] - 20250-09-10
+
+### Added
+- config.kai.scheduler CRD that will describe the installation of all KAI-scheduler services for the operator
+- Initial KAI-operator implementation for managing components
+- PodGroup Controller, Queue Controller, Admission and Scale Adjuster operands to operator lifecycle management
+- Deployment of operator in Helm chart alongside pod group controller
+- Deploy PodGroup Controller, Queue Controller, Admission and Scale Adjuster via operator for streamlined deployment
+- schedulingshrards.kai.scheduler CRD that describes partitioning the cluster nodes for different scheduling options.
+
+### Changed
+- Moved the CRDs into the helm chart so that they are also installed by helm and not only by the crd-upgrader, but removed the external kueue clone of topology CRD from being automatically installed.
+- Updated queue controller image name to align with current deployment standards
+
+### Fixed
+- Removed webhook manager component as part of operator-based refactoring
+
+## [v0.8.5] - 20250-09-04
+
+### Added
+- Added configurable plugins hub for podgrouper using interface and RegisterPlugins
+
+## [v0.8.4] - 20250-09-02
+
+### Added
+- Added a plugin to reflect joborder in scheduler http endpoint - Contributed by Saurabh Kumar Singh <singh1203.ss@gmail.com>
+
+### Fixed
+- Fixed a bug where workload with subgroups would not consider additional tasks above minAvailable
+
+## [v0.8.3] - 20250-08-31
+
+### Removed
+- Removed unused code that required gpu-operator as a dependency
+
+## [v0.8.2] - 2025-08-25
+
+### Fixed
+- Fixed wrong GPU memory unit conversion from node `nvidia.com/gpu.memory` labels
+- Fixed incorrect MIG GPU usage calculation leading to wrong scheduling decision
+
+## [v0.8.1] - 2025-08-20
+
+### Added
+- Added a new scheduler flag `--update-pod-eviction-condition`. When enabled, a DisruptionTarget condition is set on the pod before deletion
+
+### Fixed
+- Fixed scheduler panic in some elastic reclaim scenarios
+
+## [v0.8.0] - 2025-08-18
+
+### Added
+- Added leader election configuration in all deployments and added global helm value that controls it during installation
+
+## [v0.7.13] - 2025-08-12
+
+### Added
+- Separated admission webhooks from binder service to a separate `kai-admission` service
+
+### Fixed
+- crd-upgrader respects global values for nodeSelector, affinity and tolerations 
+- kai-scheduler will not ignore pod spec.overhead field
 
 ## [v0.7.12] - 2025-08-04
 

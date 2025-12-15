@@ -16,14 +16,19 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 
 # Space seperated list of services to build by default
 # SERVICE_NAMES := service1 service2 service3
-SERVICE_NAMES := podgrouper scheduler binder webhookmanager resourcereservation snapshot-tool scalingpod nodescaleadjuster podgroupcontroller queuecontroller fairshare-simulator
+SERVICE_NAMES := podgrouper scheduler binder resourcereservation snapshot-tool scalingpod nodescaleadjuster podgroupcontroller queuecontroller fairshare-simulator admission operator time-aware-simulator
 
 
 lint: fmt-go vet-go lint-go
 .PHONY: lint
 
+.PHONY: test-chart
+test-chart:
+	@echo "Running tests for Helm chart: kai-scheduler"
+	docker run -t --rm -v ./deployments/kai-scheduler:/apps helmunittest/helm-unittest:3.17.2-0.8.1 . -f 'tests/**/*_test.yaml'
+
 .PHONY: test
-test: envtest-docker-go
+test: test-chart envtest-docker-go
 
 .PHONY: build
 build: $(SERVICE_NAMES)
@@ -32,6 +37,10 @@ build: $(SERVICE_NAMES)
 $(SERVICE_NAMES):
 	$(MAKE) build-go SERVICE_NAME=$@
 	$(MAKE) docker-build-generic SERVICE_NAME=$@
+
+.PHONY: push
+push: $(SERVICE_NAMES)
+	docker push $(DOCKER_REPO_BASE)/crd-upgrader:$(VERSION)
 
 .PHONY: validate
 validate: generate manifests clients gen-license generate-mocks lint
@@ -58,7 +67,7 @@ gen-license: addlicense
 
 .PHONY: manifests
 manifests: controller-gen kustomize ## Generate ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) crd:allowDangerousTypes=true,generateEmbeddedObjectMeta=true,headerFile="./hack/boilerplate.yaml.txt" paths="./pkg/apis/..." output:crd:artifacts:config=deployments/crds/internal
+	$(CONTROLLER_GEN) crd:allowDangerousTypes=true,generateEmbeddedObjectMeta=true,headerFile="./hack/boilerplate.yaml.txt" paths="./pkg/apis/..." output:crd:artifacts:config=deployments/kai-scheduler/crds
 	$(CONTROLLER_GEN) rbac:roleName=kai-podgrouper,headerFile="./hack/boilerplate.yaml.txt" paths="./pkg/podgrouper/..." paths="./cmd/podgrouper/..." output:stdout > deployments/kai-scheduler/templates/rbac/podgrouper.yaml
 	$(CONTROLLER_GEN) rbac:roleName=kai-binder,headerFile="./hack/boilerplate.yaml.txt" paths="./pkg/binder/..." paths="./cmd/binder/..." output:stdout > deployments/kai-scheduler/templates/rbac/binder.yaml
 	$(CONTROLLER_GEN) rbac:roleName=kai-resource-reservation,headerFile="./hack/boilerplate.yaml.txt" paths="./pkg/resourcereservation/..." paths="./cmd/resourcereservation/..." output:stdout > deployments/kai-scheduler/templates/rbac/resourcereservation.yaml
@@ -66,10 +75,8 @@ manifests: controller-gen kustomize ## Generate ClusterRole and CustomResourceDe
 	$(CONTROLLER_GEN) rbac:roleName=kai-node-scale-adjuster,headerFile="./hack/boilerplate.yaml.txt" paths="./pkg/nodescaleadjuster/..." paths="./cmd/nodescaleadjuster/..." output:stdout > deployments/kai-scheduler/templates/rbac/nodescaleadjuster.yaml
 	$(CONTROLLER_GEN) rbac:roleName=kai-podgroup-controller,headerFile="./hack/boilerplate.yaml.txt" paths="./pkg/podgroupcontroller/..." paths="./cmd/podgroupcontroller/..." output:stdout > deployments/kai-scheduler/templates/rbac/podgroupcontroller.yaml
 	$(CONTROLLER_GEN) rbac:roleName=queuecontroller,headerFile="./hack/boilerplate.yaml.txt" paths="./pkg/queuecontroller/..." paths="./cmd/queuecontroller/..." output:stdout > deployments/kai-scheduler/templates/rbac/queuecontroller.yaml
-
-	$(CONTROLLER_GEN) rbac:roleName=kai-webhookmanager,headerFile="./hack/boilerplate.yaml.txt" paths="./pkg/webhookmanager/..." paths="./cmd/webhookmanager/..." output:stdout > deployments/kustomization/webhookmanager-clusterrole/resource.yaml
-	$(KUSTOMIZE) build deployments/kustomization/webhookmanager-clusterrole >  deployments/kai-scheduler/templates/rbac/webhookmanager.yaml
-	rm -rf deployments/kustomization/webhookmanager-clusterrole/resource.yaml
+	$(CONTROLLER_GEN) rbac:roleName=kai-admission,headerFile="./hack/boilerplate.yaml.txt" paths="./pkg/admission/..." paths="./cmd/admission/..." output:stdout > deployments/kai-scheduler/templates/rbac/admission.yaml
+	$(CONTROLLER_GEN) rbac:roleName=kai-operator,headerFile="./hack/boilerplate.yaml.txt" paths="./pkg/operator/..." paths="./cmd/operator/..." output:stdout > deployments/kai-scheduler/templates/rbac/operator.yaml
 
 	$(MAKE) gen-license
 

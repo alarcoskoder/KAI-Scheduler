@@ -30,15 +30,14 @@ Before installing KAI Scheduler, ensure you have:
 - [NVIDIA GPU-Operator](https://github.com/NVIDIA/gpu-operator) installed in order to schedule workloads that request GPU resources
 
 ## Installation
-KAI Scheduler will be installed in `kai-scheduler` namespace. When submitting workloads make sure to use a dedicated namespace.
+KAI Scheduler will be installed in `kai-scheduler` namespace.
+> ⚠️ When submitting workloads, make sure to use a dedicated namespace. Do not use the `kai-scheduler` namespace for workload submission.
 
 ### Installation Methods
 KAI Scheduler can be installed:
 
 - **From Production (Recommended)**
 - **From Source (Build it Yourself)**
-
-⚠️ For API changes and migration guides, please refer to [Breaking Changes & Migration Guides](docs/migrationguides/README.md)
 
 #### Install from Production
 Locate the latest release version in [releases](https://github.com/NVIDIA/KAI-Scheduler/releases) page.
@@ -49,11 +48,18 @@ helm upgrade -i kai-scheduler oci://ghcr.io/nvidia/kai-scheduler/kai-scheduler -
 #### Build from Source
 Follow the instructions [here](docs/developer/building-from-source.md)
 
+## Flavor Specific Instructions
+### Openshift
+When `gpu-operator` <v25.10.0 is installed, the following flag should be added to the installation command:
+```
+--set admission.gpuPodRuntimeClassName=null
+```
+
+## Support & Breaking changes
+Refer to the [Breaking Changes](https://github.com/NVIDIA/KAI-Scheduler/blob/main/docs/migrationguides/README.md) doc for more info
+
 ## Quick Start
 To start scheduling workloads with KAI Scheduler, please continue to [Quick Start example](docs/quickstart/README.md)
-
-## Breaking Changes
-- **[v0.6.0](docs/migrationguides/v0.6.0/)** – Renamed resource reservation namespace and scheduling queue label key.  
 
 ## Roadmap
 
@@ -81,6 +87,10 @@ To start scheduling workloads with KAI Scheduler, please continue to [Quick Star
 
 We’d love to hear from you! Here are the best ways to connect:
 
+### Contributing
+Contributions are encouraged and appreciated! 
+Please have a look at KAI-scheduler's [contribution guide](https://github.com/NVIDIA/KAI-Scheduler/blob/main/CONTRIBUTING.md) before submitting PRs.
+
 ### Slack
 Join the [CNCF Slack](https://communityinviter.com/apps/cloud-native/cncf) first and visit the [#kai-scheduler](https://cloud-native.slack.com/archives/kai-scheduler) channel.
 
@@ -93,4 +103,3 @@ Join the [kai-scheduler mailing list](https://groups.google.com/g/kai-scheduler)
 
 ### Technical Issues & Feature Requests  
 Please open a [GitHub issue](https://github.com/NVIDIA/KAI-Scheduler/issues/new/choose) for bugs, feature suggestions, or technical help. This helps us keep track of requests and respond effectively.
-

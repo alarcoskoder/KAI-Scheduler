@@ -5,19 +5,15 @@ package app
 
 import (
 	"context"
-	"flag"
+	"encoding/json"
 	"fmt"
 	"time"
-
-	admissionhooks "github.com/NVIDIA/KAI-scheduler/pkg/admission/webhook/v1alpha2/podhooks"
-	"github.com/NVIDIA/KAI-scheduler/pkg/common/constants"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	"k8s.io/client-go/rest"
 
-	"github.com/spf13/pflag"
-	"go.uber.org/zap/zapcore"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -26,18 +22,17 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	schedulingv1alpha2 "github.com/NVIDIA/KAI-scheduler/pkg/apis/scheduling/v1alpha2"
+	draversionawareclient "github.com/NVIDIA/KAI-scheduler/pkg/common/resources/dra_version_aware_client"
 
-	admissionplugins "github.com/NVIDIA/KAI-scheduler/pkg/admission/plugins"
 	"github.com/NVIDIA/KAI-scheduler/pkg/binder/binding"
 	"github.com/NVIDIA/KAI-scheduler/pkg/binder/binding/resourcereservation"
 	"github.com/NVIDIA/KAI-scheduler/pkg/binder/controllers"
-	bindingplugins "github.com/NVIDIA/KAI-scheduler/pkg/binder/plugins"
+	"github.com/NVIDIA/KAI-scheduler/pkg/binder/plugins"
+	"github.com/NVIDIA/KAI-scheduler/pkg/common/constants"
 )
 
 var (
@@ -60,26 +55,10 @@ type App struct {
 	manager          manager.Manager
 	rrs              resourcereservation.Interface
 	reconcilerParams *controllers.ReconcilerParams
-	admissionPlugins *admissionplugins.KaiAdmissionPlugins
-	bindingPlugins   *bindingplugins.BinderPlugins
+	plugins          *plugins.BinderPlugins
 }
 
-// +kubebuilder:webhook:path=/mutate--v1-pod,mutating=true,failurePolicy=fail,sideEffects=None,resources=pods,verbs=create,groups=core,versions=v1,name=binder.run.ai,admissionReviewVersions=v1,reinvocationPolicy=IfNeeded
-// +kubebuilder:webhook:path=/validate--v1-pod,mutating=false,failurePolicy=fail,sideEffects=None,resources=pods,verbs=create;update,groups=core,versions=v1,name=binder.run.ai,admissionReviewVersions=v1
-
-func New() (*App, error) {
-	options := InitOptions()
-	opts := zap.Options{
-		Development: true,
-		TimeEncoder: zapcore.ISO8601TimeEncoder,
-	}
-	opts.BindFlags(flag.CommandLine)
-	pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
-
-	pflag.Parse()
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-
-	config := ctrl.GetConfigOrDie()
+func New(options *Options, config *rest.Config) (*App, error) {
 	config.QPS = float32(options.QPS)
 	config.Burst = options.Burst
 
@@ -88,9 +67,6 @@ func New() (*App, error) {
 		Metrics: server.Options{
 			BindAddress: options.MetricsAddr,
 		},
-		WebhookServer: webhook.NewServer(webhook.Options{
-			Port: options.WebhookPort,
-		}),
 		HealthProbeBindAddress: options.ProbeAddr,
 		LeaderElection:         options.EnableLeaderElection,
 		LeaderElectionID:       "2ad35f9c.kai.scheduler",
@@ -126,13 +102,24 @@ func New() (*App, error) {
 		return nil, err
 	}
 
-	kubeClient := kubernetes.NewForConfigOrDie(config)
+	kubeClient := draversionawareclient.NewDRAAwareClient(kubernetes.NewForConfigOrDie(config))
 	informerFactory := informers.NewSharedInformerFactory(kubeClient, 0)
+
+	// Deserialize pod resources if provided
+	var podResources *corev1.ResourceRequirements
+	if options.ResourceReservationPodResourcesJSON != "" {
+		podResources = &corev1.ResourceRequirements{}
+		if err := json.Unmarshal([]byte(options.ResourceReservationPodResourcesJSON), podResources); err != nil {
+			setupLog.Error(err, "failed to unmarshal resource reservation pod resources")
+			return nil, fmt.Errorf("failed to unmarshal resource reservation pod resources: %w", err)
+		}
+	}
 
 	rrs := resourcereservation.NewService(options.FakeGPUNodes, clientWithWatch, options.ResourceReservationPodImage,
 		time.Duration(options.ResourceReservationAllocationTimeout)*time.Second,
 		options.ResourceReservationNamespace, options.ResourceReservationServiceAccount,
-		options.ResourceReservationAppLabel, options.ScalingPodNamespace)
+		options.ResourceReservationAppLabel, options.ScalingPodNamespace, options.RuntimeClassName,
+		podResources)
 
 	reconcilerParams := &controllers.ReconcilerParams{
 		MaxConcurrentReconciles:     options.MaxConcurrentReconciles,
@@ -152,12 +139,14 @@ func New() (*App, error) {
 	return app, nil
 }
 
-func (app *App) RegisterPlugins(admissionPlugins *admissionplugins.KaiAdmissionPlugins, bindingPlugins *bindingplugins.BinderPlugins) {
-	app.admissionPlugins = admissionPlugins
-	app.bindingPlugins = bindingPlugins
+func (app *App) RegisterPlugins(plugins *plugins.BinderPlugins) {
+	app.plugins = plugins
 }
 
-func (app *App) Run() error {
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
+
+func (app *App) Run(ctx context.Context) error {
 	var err error
 	go func() {
 		app.manager.GetCache().WaitForCacheSync(context.Background())
@@ -179,18 +168,10 @@ func (app *App) Run() error {
 		return err
 	}
 
-	if err = ctrl.NewWebhookManagedBy(app.manager).For(&corev1.Pod{}).
-		WithDefaulter(admissionhooks.NewPodMutator(app.manager.GetClient(), app.admissionPlugins, app.Options.SchedulerName)).
-		WithValidator(admissionhooks.NewPodValidator(app.manager.GetClient(), app.admissionPlugins, app.Options.SchedulerName)).Complete(); err != nil {
-		setupLog.Error(err, "unable to create pod webhooks", "webhook", "Pod")
-		return err
-	}
+	binder := binding.NewBinder(app.Client, app.rrs, app.plugins)
 
-	binder := binding.NewBinder(app.Client, app.rrs, app.bindingPlugins)
-
-	stopCh := make(chan struct{})
-	app.InformerFactory.Start(stopCh)
-	app.InformerFactory.WaitForCacheSync(stopCh)
+	app.InformerFactory.Start(ctx.Done())
+	app.InformerFactory.WaitForCacheSync(ctx.Done())
 
 	reconciler := controllers.NewBindRequestReconciler(
 		app.manager.GetClient(), app.manager.GetScheme(), app.manager.GetEventRecorderFor("binder"), app.reconcilerParams,
@@ -201,17 +182,8 @@ func (app *App) Run() error {
 	}
 	// +kubebuilder:scaffold:builder
 
-	if err = app.manager.AddHealthzCheck("healthz", app.manager.GetWebhookServer().StartedChecker()); err != nil {
-		setupLog.Error(err, "unable to set up health check")
-		return err
-	}
-	if err = app.manager.AddReadyzCheck("readyz", app.manager.GetWebhookServer().StartedChecker()); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
-		return err
-	}
-
 	setupLog.Info("starting manager")
-	if err = app.manager.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err = app.manager.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		return err
 	}
@@ -219,7 +191,6 @@ func (app *App) Run() error {
 }
 
 func createIndexesForResourceReservation(mgr manager.Manager) error {
-
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(), &corev1.Pod{}, "spec.nodeName",
 		func(obj client.Object) []string {

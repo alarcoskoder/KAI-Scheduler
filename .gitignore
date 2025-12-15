@@ -6,7 +6,14 @@ cover.out
 coverage/
 *.test
 launch.json
+coverage.out
+vendor/
+/generate-dep.go
 
 cmd/fairshare-simulator/fairshare-simulator
+cmd/snapshot-tool/snapshot-tool
+cmd/time-aware-simulator/time-aware-simulator
+cmd/time-aware-simulator/simulation_results.csv
+cmd/time-aware-simulator/venv
 cmd/snapshot-tool/snapshot-toolminikube-linux-amd64
 minikube-linux-amd64

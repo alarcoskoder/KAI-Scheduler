@@ -14,13 +14,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/uuid"
-	"k8s.io/utils/pointer"
 
 	enginev2alpha2 "github.com/NVIDIA/KAI-scheduler/pkg/apis/scheduling/v2alpha2"
+	pg "github.com/NVIDIA/KAI-scheduler/pkg/common/podgroup"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/common_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/pod_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/pod_status"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/podgroup_info"
+	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/podgroup_info/subgroup_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/resource_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/constants/labels"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/test_utils/resources_fake"
@@ -34,6 +35,7 @@ type TestJobBasic struct {
 	RequiredMemoryPerTask               float64
 	RequiredMultiFractionDevicesPerTask *uint64
 	Priority                            int32
+	Preemptibility                      enginev2alpha2.Preemptibility
 	Name                                string
 	Namespace                           string
 	QueueName                           string
@@ -41,9 +43,8 @@ type TestJobBasic struct {
 	JobAgeInMinutes                     int
 	DeleteJobInTest                     bool
 	JobNotReadyForSsn                   bool
-	MinAvailable                        *int32
 	Tasks                               []*tasks_fake.TestTaskBasic
-	SubGroups                           map[string]*podgroup_info.SubGroupInfo
+	RootSubGroupSet                     *subgroup_info.SubGroupSet
 	StaleDuration                       *time.Duration
 }
 
@@ -75,13 +76,11 @@ func BuildJobsAndTasksMaps(Jobs []*TestJobBasic) (
 			jobCreationTime = time.Now().Add(time.Minute * time.Duration(numberOfJobs-jobIndex) * (-1))
 		}
 
-		if job.MinAvailable == nil {
-			job.MinAvailable = pointer.Int32(int32(len(job.Tasks)))
-		}
+		job.Preemptibility = pg.CalculatePreemptibility(job.Preemptibility, job.Priority)
 
 		jobInfo := BuildJobInfo(
-			jobName, job.Namespace, jobUID, jobAllocatedResource, job.SubGroups, taskInfos, job.Priority, queueUID,
-			jobCreationTime, *job.MinAvailable, job.StaleDuration,
+			jobName, job.Namespace, jobUID, jobAllocatedResource, job.RootSubGroupSet, taskInfos,
+			job.Priority, job.Preemptibility, queueUID, jobCreationTime, job.StaleDuration,
 		)
 		jobsInfoMap[common_info.PodGroupID(job.Name)] = jobInfo
 	}
@@ -90,10 +89,10 @@ func BuildJobsAndTasksMaps(Jobs []*TestJobBasic) (
 }
 
 func BuildJobInfo(
-	name, namespace string,
-	uid common_info.PodGroupID, allocatedResource *resource_info.Resource,
-	subGroups map[string]*podgroup_info.SubGroupInfo, taskInfos []*pod_info.PodInfo, priority int32,
-	queueUID common_info.QueueID, jobCreationTime time.Time, minAvailable int32, staleDuration *time.Duration,
+	name, namespace string, uid common_info.PodGroupID, allocatedResource *resource_info.Resource,
+	rootSubGroupSet *subgroup_info.SubGroupSet, taskInfos []*pod_info.PodInfo,
+	priority int32, preemptibility enginev2alpha2.Preemptibility, queueUID common_info.QueueID,
+	jobCreationTime time.Time, staleDuration *time.Duration,
 ) *podgroup_info.PodGroupInfo {
 	allTasks := pod_info.PodsMap{}
 	taskStatusIndex := map[pod_status.PodStatus]pod_info.PodsMap{}
@@ -106,30 +105,38 @@ func BuildJobInfo(
 		taskStatusIndex[taskInfo.Status][taskInfo.UID] = taskInfo
 	}
 
-	if subGroups == nil {
-		subGroups = map[string]*podgroup_info.SubGroupInfo{}
+	if rootSubGroupSet == nil {
+		rootSubGroupSet = subgroup_info.NewSubGroupSet(subgroup_info.RootSubGroupSetName, nil)
 	}
+	podSets := rootSubGroupSet.GetAllPodSets()
 	for _, taskInfo := range taskInfos {
 		if len(taskInfo.SubGroupName) > 0 {
-			subGroup := subGroups[taskInfo.SubGroupName]
+			subGroup := podSets[taskInfo.SubGroupName]
 			subGroup.AssignTask(taskInfo)
+		} else {
+			if podSets[podgroup_info.DefaultSubGroup] == nil {
+				podSets[podgroup_info.DefaultSubGroup] = subgroup_info.NewPodSet(
+					podgroup_info.DefaultSubGroup, int32(len(taskInfos)), nil,
+				)
+				rootSubGroupSet.AddPodSet(podSets[podgroup_info.DefaultSubGroup])
+			}
+			podSets[podgroup_info.DefaultSubGroup].AssignTask(taskInfo)
 		}
 	}
 
 	result := &podgroup_info.PodGroupInfo{
-		UID:               uid,
-		Name:              name,
-		Namespace:         namespace,
-		Allocated:         allocatedResource,
-		PodInfos:          allTasks,
-		PodStatusIndex:    taskStatusIndex,
-		Priority:          priority,
-		JobFitErrors:      make(enginev2alpha2.UnschedulableExplanations, 0),
+		UID:            uid,
+		Name:           name,
+		Namespace:      namespace,
+		Allocated:      allocatedResource,
+		PodStatusIndex: taskStatusIndex,
+		Priority:       priority,
+		Preemptibility: preemptibility, JobFitErrors: make(enginev2alpha2.UnschedulableExplanations, 0),
 		NodesFitErrors:    map[common_info.PodID]*common_info.FitErrors{},
 		Queue:             queueUID,
 		CreationTimestamp: metav1.Time{Time: jobCreationTime},
-		MinAvailable:      minAvailable,
-		SubGroups:         subGroups,
+		RootSubGroupSet:   rootSubGroupSet,
+		PodSets:           podSets,
 		PodGroup: &enginev2alpha2.PodGroup{
 			ObjectMeta: metav1.ObjectMeta{
 				UID:               types.UID(uid),
@@ -138,11 +145,11 @@ func BuildJobInfo(
 				CreationTimestamp: metav1.Time{Time: jobCreationTime},
 			},
 			Spec: enginev2alpha2.PodGroupSpec{
-				Queue:     string(queueUID),
-				MinMember: minAvailable,
+				Queue: string(queueUID),
 			},
 		},
 	}
+
 	_ = result.GetActiveAllocatedTasksCount()
 	if staleDuration != nil {
 		staleTime := time.Now().Add(-1 * *staleDuration)
@@ -154,6 +161,12 @@ func BuildJobInfo(
 		result.LastStartTimestamp = &startTime
 	}
 	return result
+}
+
+func DefaultSubGroup(minAvailable int32) *subgroup_info.SubGroupSet {
+	subGroup := subgroup_info.NewSubGroupSet(subgroup_info.RootSubGroupSetName, nil)
+	subGroup.AddPodSet(subgroup_info.NewPodSet(podgroup_info.DefaultSubGroup, minAvailable, nil))
+	return subGroup
 }
 
 func generateTasks(job *TestJobBasic, jobAllocatedResource *resource_info.Resource,
@@ -275,8 +288,8 @@ func createPodOfTask(job *TestJobBasic, taskIndex int,
 	task *tasks_fake.TestTaskBasic, podResourceList *v1.ResourceList,
 	gpuFraction string, gpuMemory string, gpuGroups []string) *v1.Pod {
 	podName := fmt.Sprintf("%s-%d", job.Name, taskIndex)
-	podOfTask := tasks_fake.BuildPod(podName, job.Namespace, task.NodeName, task.NodeAffinityNames, v1.PodPending, *podResourceList, gpuFraction, gpuMemory,
-		gpuGroups, job.Name, task.RequiredMigInstances, task.ResourceClaimNames, task.ResourceClaimTemplates)
+	podOfTask := tasks_fake.BuildPod(podName, job.Namespace, task, v1.PodPending, *podResourceList, gpuFraction, gpuMemory,
+		gpuGroups, job.Name)
 
 	if task.Priority != nil {
 		podOfTask.Labels[labels.TaskOrderLabelKey] = strconv.Itoa(int(*task.Priority))

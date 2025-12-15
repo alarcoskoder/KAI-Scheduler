@@ -6,11 +6,10 @@ package dynamicresources
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
-	resourceapi "k8s.io/api/resource/v1beta1"
+	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/dynamic-resource-allocation/cel"
 	"k8s.io/dynamic-resource-allocation/structured"
 	k8sframework "k8s.io/kubernetes/pkg/scheduler/framework"
@@ -37,22 +36,17 @@ type draPlugin struct {
 
 // +kubebuilder:rbac:groups="resource.k8s.io",resources=deviceclasses;resourceslices;resourceclaims,verbs=get;list;watch
 
-func New(pluginArgs map[string]string) framework.Plugin {
-	maxCelCacheEntries := defaultMaxCelCacheEntries
-	if entries, found := pluginArgs[maxCelCacheEntriesKey]; found {
-		value, err := strconv.Atoi(entries)
-		if err != nil {
-			log.InfraLogger.V(2).Warnf("Failed to parse %s as int: %v, err: %v.\n Using default value of: %d",
-				maxCelCacheEntriesKey, entries, err, defaultMaxCelCacheEntries)
-		} else {
-			maxCelCacheEntries = value
-		}
+func New(pluginArgs framework.PluginArguments) framework.Plugin {
+	maxCelCacheEntries, err := pluginArgs.GetInt(maxCelCacheEntriesKey, defaultMaxCelCacheEntries)
+	if err != nil {
+		log.InfraLogger.Warningf("Failed to parse %s as int: %v, err: %v.\n Using default value of: %d",
+			maxCelCacheEntriesKey, err, defaultMaxCelCacheEntries)
 	}
 
 	features := k8s_utils.GetK8sFeatures()
 	return &draPlugin{
 		enabled:  features.EnableDynamicResourceAllocation,
-		celCache: cel.NewCache(maxCelCacheEntries),
+		celCache: cel.NewCache(maxCelCacheEntries, cel.Features{EnableConsumableCapacity: features.EnableConsumableCapacity}),
 	}
 }
 
@@ -77,7 +71,7 @@ func (drap *draPlugin) OnSessionOpen(ssn *framework.Session) {
 
 func (drap *draPlugin) assumePendingClaims(ssn *framework.Session) {
 	for _, podGroup := range ssn.PodGroupInfos {
-		for _, pod := range podGroup.PodInfos {
+		for _, pod := range podGroup.GetAllPodsMap() {
 			if pod.BindRequest == nil {
 				continue
 			}
@@ -208,20 +202,19 @@ func (drap *draPlugin) allocateResourceClaim(task *pod_info.PodInfo, podClaim *v
 	resources.UpsertReservedFor(claim, task.Pod)
 
 	if claim.Status.Allocation == nil {
-		allocatedDevices, err := drap.manager.ResourceClaims().ListAllAllocatedDevices()
+		allocatedState, err := drap.manager.ResourceClaims().GatherAllocatedState()
 		if err != nil {
 			return fmt.Errorf("failed to list all allocated devices: %v", err)
 		}
 
-		resourceSlices, err := drap.manager.ResourceSlices().List()
+		resourceSlices, err := drap.manager.ResourceSlices().ListWithDeviceTaintRules()
 		if err != nil {
 			return fmt.Errorf("failed to list all resource slices: %v", err)
 		}
 
 		allocator, err := structured.NewAllocator(
-			context.Background(), false,
-			[]*resourceapi.ResourceClaim{claim},
-			allocatedDevices,
+			context.Background(), structured.Features{},
+			*allocatedState,
 			drap.manager.DeviceClasses(),
 			resourceSlices,
 			drap.celCache,
@@ -231,7 +224,7 @@ func (drap *draPlugin) allocateResourceClaim(task *pod_info.PodInfo, podClaim *v
 			return fmt.Errorf("failed to create allocator: %v", err)
 		}
 
-		result, err := allocator.Allocate(context.Background(), node)
+		result, err := allocator.Allocate(context.Background(), node, []*resourceapi.ResourceClaim{claim})
 		if err != nil || result == nil {
 			return fmt.Errorf("failed to allocate resources: %v", err)
 		}

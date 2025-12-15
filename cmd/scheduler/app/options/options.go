@@ -30,9 +30,6 @@ import (
 )
 
 const (
-	defaultSchedulerName               = "kai-scheduler"
-	defaultResourceReservationAppLabel = "kai-resource-reservation"
-	defaultNamespace                   = "kai-scheduler"
 	defaultSchedulerPeriod             = time.Second
 	defaultStalenessGracePeriod        = 60 * time.Second
 	defaultListenAddress               = ":8080"
@@ -43,10 +40,6 @@ const (
 	DefaultPyroscopeMutexProfilerRate  = 5
 	DefaultPyroscopeBlockProfilerRate  = 5
 	defaultNumOfStatusRecordingWorkers = 5
-	defaultNodePoolLabelKey            = ""
-	defaultCPUWorkerNodeLabelKey       = "node-role.kubernetes.io/cpu-worker"
-	defaultGPUWorkerNodeLabelKey       = "node-role.kubernetes.io/gpu-worker"
-	defaultMIGWorkerNodeLabelKey       = "node-role.kubernetes.io/mig-enabled"
 )
 
 // ServerOption is the main context object for the controller manager.
@@ -68,13 +61,12 @@ type ServerOption struct {
 	PyroscopeMutexProfilerRate        int
 	PyroscopeBlockProfilerRate        int
 	Verbosity                         int
-	IsInferencePreemptible            bool
 	MaxNumberConsolidationPreemptees  int
 	DetailedFitErrors                 bool
+	UpdatePodEvictionCondition        bool
 	ScheduleCSIStorage                bool
 	UseSchedulingSignatures           bool
 	FullHierarchyFairness             bool
-	NodeLevelScheduler                bool
 	AllowConsolidatingReclaim         bool
 	NumOfStatusRecordingWorkers       int
 	GlobalDefaultStalenessGracePeriod time.Duration
@@ -97,12 +89,12 @@ func NewServerOption() *ServerOption {
 // AddFlags adds flags for a specific CMServer to the specified FlagSet
 func (s *ServerOption) AddFlags(fs *pflag.FlagSet) {
 	// kai-scheduler will ignore pods with scheduler names other than specified with the option
-	fs.StringVar(&s.SchedulerName, "scheduler-name", defaultSchedulerName, "The scheduler name in pod spec that handled by this scheduler")
-	fs.StringVar(&s.Namspace, "namespace", defaultNamespace, "Scheduler service namespace")
+	fs.StringVar(&s.SchedulerName, "scheduler-name", constants.DefaultSchedulerName, "The scheduler name in pod spec that handled by this scheduler")
+	fs.StringVar(&s.Namspace, "namespace", constants.DefaultKAINamespace, "Scheduler service namespace")
 	fs.StringVar(&s.MetricsNamespace, "metrics-namespace", constants.DefaultMetricsNamespace, "Metrics namespace")
-	fs.StringVar(&s.ResourceReservationAppLabel, "resource-reservation-app-label", defaultResourceReservationAppLabel, "App label value of resource reservation pods")
+	fs.StringVar(&s.ResourceReservationAppLabel, "resource-reservation-app-label", constants.DefaultResourceReservationName, "App label value of resource reservation pods")
 	fs.BoolVar(&s.RestrictSchedulingNodes, "restrict-node-scheduling", false, "kai-scheduler will allocate jobs only to restricted nodes")
-	fs.StringVar(&s.NodePoolLabelKey, "nodepool-label-key", defaultNodePoolLabelKey, "The label key by which to filter scheduling nodepool")
+	fs.StringVar(&s.NodePoolLabelKey, "nodepool-label-key", constants.DefaultNodePoolLabelKey, "The label key by which to filter scheduling nodepool")
 	fs.StringVar(&s.NodePoolLabelValue, "partition-label-value", "", "The label value by which to filter scheduling partition")
 	fs.StringVar(&s.SchedulerConf, "scheduler-conf", "", "The absolute path of scheduler configuration file")
 	fs.DurationVar(&s.SchedulePeriod, "schedule-period", defaultSchedulerPeriod, "The period between each scheduling cycle")
@@ -117,22 +109,21 @@ func (s *ServerOption) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&s.PyroscopeMutexProfilerRate, "pyroscope-mutex-profiler-rate", DefaultPyroscopeMutexProfilerRate, "Mutex Profiler rate")
 	fs.IntVar(&s.PyroscopeBlockProfilerRate, "pyroscope-block-profiler-rate", DefaultPyroscopeBlockProfilerRate, "Block Profiler rate")
 	fs.IntVar(&s.Verbosity, "v", defaultVerbosityLevel, "Verbosity level")
-	fs.BoolVar(&s.IsInferencePreemptible, "inference-preemptible", false, "Consider Inference workloads as preemptible")
 	fs.IntVar(&s.MaxNumberConsolidationPreemptees, "max-consolidation-preemptees", defaultMaxConsolidationPreemptees, "Maximum number of consolidation preemptees. Defaults to 16")
 	fs.IntVar(&s.QPS, "qps", 50, "Queries per second to the K8s API server")
 	fs.IntVar(&s.Burst, "burst", 300, "Burst to the K8s API server")
 	fs.BoolVar(&s.DetailedFitErrors, "detailed-fit-errors", defaultDetailedFitError, "Write detailed fit errors for every node on every podgroup")
+	fs.BoolVar(&s.UpdatePodEvictionCondition, "update-pod-eviction-condition", false, "Update pod eviction condition to reflect the pod's eviction status")
 	fs.BoolVar(&s.ScheduleCSIStorage, "schedule-csi-storage", false, "Enables advanced scheduling (preempt, reclaim) for csi storage objects")
 	fs.BoolVar(&s.UseSchedulingSignatures, "use-scheduling-signatures", true, "Use scheduling signatures to avoid duplicate scheduling attempts for identical jobs")
 	fs.BoolVar(&s.FullHierarchyFairness, "full-hierarchy-fairness", true, "Fairness across project and department levels")
-	fs.BoolVar(&s.NodeLevelScheduler, "node-level-scheduler", false, "Node level scheduler is enforced in all core powered pods")
 	fs.BoolVar(&s.AllowConsolidatingReclaim, "allow-consolidating-reclaim", true, "Do not count pipelined pods towards 'reclaimed' resources")
 	fs.IntVar(&s.NumOfStatusRecordingWorkers, "num-of-status-recording-workers", defaultNumOfStatusRecordingWorkers, "specifies the max number of go routines spawned to update pod and podgroups conditions and events. Defaults to 5")
 	fs.DurationVar(&s.GlobalDefaultStalenessGracePeriod, "default-staleness-grace-period", defaultStalenessGracePeriod, "Global default staleness grace period duration. Negative values means infinite. Defaults to 60s")
 	fs.IntVar(&s.PluginServerPort, "plugin-server-port", 8081, "The port to bind for plugin server requests")
-	fs.StringVar(&s.CPUWorkerNodeLabelKey, "cpu-worker-node-label-key", defaultCPUWorkerNodeLabelKey, "The label key for CPU worker nodes")
-	fs.StringVar(&s.GPUWorkerNodeLabelKey, "gpu-worker-node-label-key", defaultGPUWorkerNodeLabelKey, "The label key for GPU worker nodes")
-	fs.StringVar(&s.MIGWorkerNodeLabelKey, "mig-worker-node-label-key", defaultMIGWorkerNodeLabelKey, "The label key for MIG enabled worker nodes")
+	fs.StringVar(&s.CPUWorkerNodeLabelKey, "cpu-worker-node-label-key", constants.DefaultCPUWorkerNodeLabelKey, "The label key for CPU worker nodes")
+	fs.StringVar(&s.GPUWorkerNodeLabelKey, "gpu-worker-node-label-key", constants.DefaultGPUWorkerNodeLabelKey, "The label key for GPU worker nodes")
+	fs.StringVar(&s.MIGWorkerNodeLabelKey, "mig-worker-node-label-key", constants.DefaultMIGWorkerNodeLabelKey, "The label key for MIG enabled worker nodes")
 
 	utilfeature.DefaultMutableFeatureGate.AddFlag(fs)
 }

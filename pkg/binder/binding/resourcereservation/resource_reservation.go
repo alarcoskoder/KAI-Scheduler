@@ -42,8 +42,6 @@ const (
 	unknownGpuIndicator            = "-1"
 )
 
-var runtimeClassName = "nvidia"
-
 type service struct {
 	fakeGPuNodes        bool
 	kubeClient          client.WithWatch
@@ -54,6 +52,8 @@ type service struct {
 	serviceAccountName  string
 	appLabelValue       string
 	scalingPodNamespace string
+	runtimeClassName    string
+	podResources        *v1.ResourceRequirements
 }
 
 func NewService(
@@ -65,6 +65,8 @@ func NewService(
 	serviceAccountName string,
 	appLabelValue string,
 	scalingPodNamespace string,
+	runtimeClassName string,
+	podResources *v1.ResourceRequirements,
 ) *service {
 	return &service{
 		fakeGPuNodes:        fakeGPuNodes,
@@ -76,6 +78,8 @@ func NewService(
 		serviceAccountName:  serviceAccountName,
 		appLabelValue:       appLabelValue,
 		scalingPodNamespace: scalingPodNamespace,
+		runtimeClassName:    runtimeClassName,
+		podResources:        podResources,
 	}
 }
 
@@ -382,10 +386,34 @@ func (rsc *service) createGPUReservationPod(ctx context.Context, nodeName, gpuGr
 
 	podName := fmt.Sprintf("%s-%s-%s", gpuReservationPodPrefix, nodeName, rand.String(reservationPodRandomCharacters))
 
+	// Build resource requirements starting with GPU resources
 	resources := v1.ResourceRequirements{
 		Limits: v1.ResourceList{
 			constants.GpuResource: *resource.NewQuantity(numberOfGPUsToReserve, resource.DecimalSI),
 		},
+		Requests: v1.ResourceList{
+			constants.GpuResource: *resource.NewQuantity(numberOfGPUsToReserve, resource.DecimalSI),
+		},
+	}
+
+	// Merge in configured CPU/Memory resources if provided, but skip GPU resources to prevent override
+	if rsc.podResources != nil {
+		if rsc.podResources.Limits != nil {
+			for resourceName, quantity := range rsc.podResources.Limits {
+				// Skip GPU resources - they are already set correctly
+				if resourceName != constants.GpuResource {
+					resources.Limits[resourceName] = quantity
+				}
+			}
+		}
+		if rsc.podResources.Requests != nil {
+			for resourceName, quantity := range rsc.podResources.Requests {
+				// Skip GPU resources - they are already set correctly
+				if resourceName != constants.GpuResource {
+					resources.Requests[resourceName] = quantity
+				}
+			}
+		}
 	}
 
 	pod, err := rsc.createResourceReservationPod(nodeName, gpuGroup, podName, resources)
@@ -450,8 +478,13 @@ func (rsc *service) createResourceReservationPod(
 			},
 		},
 		Spec: v1.PodSpec{
-			NodeName:           nodeName,
-			RuntimeClassName:   &runtimeClassName,
+			NodeName: nodeName,
+			RuntimeClassName: func() *string {
+				if len(rsc.runtimeClassName) == 0 {
+					return nil
+				}
+				return &rsc.runtimeClassName
+			}(),
 			ServiceAccountName: rsc.serviceAccountName,
 			Containers: []v1.Container{
 				{
@@ -520,4 +553,8 @@ func (rsc *service) isScalingUp(ctx context.Context) bool {
 		}
 	}
 	return false
+}
+
+func IsGPUReservationPod(pod *v1.Pod) bool {
+	return strings.HasPrefix(pod.Name, gpuReservationPodPrefix)
 }

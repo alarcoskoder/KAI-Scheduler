@@ -47,9 +47,12 @@ import (
 	"github.com/NVIDIA/KAI-scheduler/cmd/scheduler/app/options"
 	"github.com/NVIDIA/KAI-scheduler/cmd/scheduler/profiling"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler"
+	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/actions"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/conf"
+	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/conf_util"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/log"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/metrics"
+	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/plugins"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/version"
 )
 
@@ -79,17 +82,16 @@ func BuildSchedulerParams(opt *options.ServerOption) *conf.SchedulerParams {
 		SchedulerName:                     opt.SchedulerName,
 		RestrictSchedulingNodes:           opt.RestrictSchedulingNodes,
 		PartitionParams:                   schedulingPartitionParams,
-		IsInferencePreemptible:            opt.IsInferencePreemptible,
 		MaxNumberConsolidationPreemptees:  opt.MaxNumberConsolidationPreemptees,
 		ScheduleCSIStorage:                opt.ScheduleCSIStorage,
 		UseSchedulingSignatures:           opt.UseSchedulingSignatures,
 		FullHierarchyFairness:             opt.FullHierarchyFairness,
-		NodeLevelScheduler:                opt.NodeLevelScheduler,
 		AllowConsolidatingReclaim:         opt.AllowConsolidatingReclaim,
 		NumOfStatusRecordingWorkers:       opt.NumOfStatusRecordingWorkers,
 		GlobalDefaultStalenessGracePeriod: opt.GlobalDefaultStalenessGracePeriod,
 		SchedulePeriod:                    opt.SchedulePeriod,
 		DetailedFitErrors:                 opt.DetailedFitErrors,
+		UpdatePodEvictionCondition:        opt.UpdatePodEvictionCondition,
 	}
 }
 
@@ -152,14 +154,26 @@ func setConfig(so *options.ServerOption) {
 	config.MIGWorkerNodeLabelKey = so.MIGWorkerNodeLabelKey
 }
 
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
+
 func Run(opt *options.ServerOption, config *restclient.Config, mux *http.ServeMux) error {
 	if opt.PrintVersion {
 		version.PrintVersion()
 	}
 	metrics.InitMetrics(opt.MetricsNamespace)
 
+	actions.InitDefaultActions()
+	plugins.InitDefaultPlugins()
+
+	// Load configuration of scheduler
+	schedConfig, err := conf_util.ResolveConfigurationFromFile(opt.SchedulerConf)
+	if err != nil {
+		return fmt.Errorf("error resolving configuration from file: %v", err)
+	}
+
 	scheduler, err := scheduler.NewScheduler(config,
-		opt.SchedulerConf,
+		schedConfig,
 		BuildSchedulerParams(opt),
 		mux,
 	)
@@ -190,7 +204,11 @@ func Run(opt *options.ServerOption, config *restclient.Config, mux *http.ServeMu
 	// Prepare event clients.
 	broadcaster := record.NewBroadcaster()
 	broadcaster.StartRecordingToSink(&corev1.EventSinkImpl{Interface: leaderElectionClient.CoreV1().Events(opt.Namspace)})
-	eventRecorder := broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: opt.SchedulerName})
+	componentName := opt.SchedulerName
+	if len(opt.NodePoolLabelValue) > 0 {
+		componentName = fmt.Sprintf("%s-%s", opt.SchedulerName, opt.NodePoolLabelValue)
+	}
+	eventRecorder := broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: componentName})
 
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -201,7 +219,7 @@ func Run(opt *options.ServerOption, config *restclient.Config, mux *http.ServeMu
 
 	rl, err := resourcelock.New(resourcelock.LeasesResourceLock,
 		opt.Namspace,
-		opt.SchedulerName,
+		componentName,
 		leaderElectionClient.CoreV1(),
 		leaderElectionClient.CoordinationV1(),
 		resourcelock.ResourceLockConfig{

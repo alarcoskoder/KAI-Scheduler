@@ -4,16 +4,18 @@
 package main
 
 import (
+	"flag"
 	"os"
 
+	"github.com/spf13/pflag"
+
+	"go.uber.org/zap/zapcore"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/NVIDIA/KAI-scheduler/cmd/binder/app"
-
-	admissionplugins "github.com/NVIDIA/KAI-scheduler/pkg/admission/plugins"
-	admissiongpusharing "github.com/NVIDIA/KAI-scheduler/pkg/admission/webhook/v1alpha2/gpusharing"
-	bindingplugins "github.com/NVIDIA/KAI-scheduler/pkg/binder/plugins"
-	bindinggpusharing "github.com/NVIDIA/KAI-scheduler/pkg/binder/plugins/gpusharing"
+	"github.com/NVIDIA/KAI-scheduler/pkg/binder/plugins"
+	"github.com/NVIDIA/KAI-scheduler/pkg/binder/plugins/gpusharing"
 	k8s_plugins "github.com/NVIDIA/KAI-scheduler/pkg/binder/plugins/k8s-plugins"
 )
 
@@ -22,7 +24,18 @@ var (
 )
 
 func main() {
-	app, err := app.New()
+	options := app.InitOptions(nil)
+	opts := zap.Options{
+		Development: true,
+		TimeEncoder: zapcore.ISO8601TimeEncoder,
+	}
+	opts.BindFlags(flag.CommandLine)
+	pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
+
+	pflag.Parse()
+	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	app, err := app.New(options, ctrl.GetConfigOrDie())
 	if err != nil {
 		setupLog.Error(err, "failed to create app")
 		os.Exit(1)
@@ -34,7 +47,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	err = app.Run()
+	ctx := ctrl.SetupSignalHandler()
+	err = app.Run(ctx)
 	if err != nil {
 		setupLog.Error(err, "failed to run app")
 		os.Exit(1)
@@ -42,8 +56,7 @@ func main() {
 }
 
 func registerPlugins(app *app.App) error {
-	binderPlugins := bindingplugins.New()
-	admissionPlugins := admissionplugins.New()
+	binderPlugins := plugins.New()
 	k8sPlugins, err := k8s_plugins.New(app.K8sInterface, app.InformerFactory,
 		int64(app.Options.VolumeBindingTimeoutSeconds))
 	if err != nil {
@@ -51,13 +64,9 @@ func registerPlugins(app *app.App) error {
 	}
 	binderPlugins.RegisterPlugin(k8sPlugins)
 
-	bindingGpuSharingPlugin := bindinggpusharing.New(app.Client,
-		app.Options.GpuCdiEnabled, app.Options.GPUSharingEnabled)
-	admissionGpuSharingPlugin := admissiongpusharing.New(app.Client,
-		app.Options.GpuCdiEnabled, app.Options.GPUSharingEnabled)
+	bindingGpuSharingPlugin := gpusharing.New(app.Client, app.Options.GpuCdiEnabled)
 
 	binderPlugins.RegisterPlugin(bindingGpuSharingPlugin)
-	admissionPlugins.RegisterPlugin(admissionGpuSharingPlugin)
-	app.RegisterPlugins(admissionPlugins, binderPlugins)
+	app.RegisterPlugins(binderPlugins)
 	return nil
 }

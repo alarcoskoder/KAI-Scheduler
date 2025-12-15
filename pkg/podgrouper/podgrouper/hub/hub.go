@@ -55,12 +55,16 @@ const (
 // +kubebuilder:rbac:groups=tekton.dev,resources=pipelineruns/finalizers;taskruns/finalizers,verbs=patch;update;create
 // +kubebuilder:rbac:groups=run.ai,resources=trainingworkloads;interactiveworkloads;distributedworkloads;inferenceworkloads;distributedinferenceworkloads,verbs=get;list;watch
 
-type PluginsHub struct {
+type DefaultPluginsHub struct {
 	defaultPlugin *defaultgrouper.DefaultGrouper
 	customPlugins map[metav1.GroupVersionKind]grouper.Grouper
 }
 
-func (ph *PluginsHub) GetPodGrouperPlugin(gvk metav1.GroupVersionKind) grouper.Grouper {
+type PluginsHub interface {
+	GetPodGrouperPlugin(gvk metav1.GroupVersionKind) grouper.Grouper
+}
+
+func (ph *DefaultPluginsHub) GetPodGrouperPlugin(gvk metav1.GroupVersionKind) grouper.Grouper {
 	if f, found := ph.customPlugins[gvk]; found {
 		return f
 	}
@@ -73,11 +77,28 @@ func (ph *PluginsHub) GetPodGrouperPlugin(gvk metav1.GroupVersionKind) grouper.G
 	return ph.defaultPlugin
 }
 
-func NewPluginsHub(kubeClient client.Client, searchForLegacyPodGroups,
+func (ph *DefaultPluginsHub) GetDefaultPlugin() grouper.Grouper {
+	return ph.defaultPlugin
+}
+
+func (ph *DefaultPluginsHub) HasMatchingPlugin(gvk metav1.GroupVersionKind) bool {
+	if _, found := ph.customPlugins[gvk]; found {
+		return true
+	}
+
+	// search using wildcard version
+	gvk.Version = "*"
+	if _, found := ph.customPlugins[gvk]; found {
+		return true
+	}
+	return false
+}
+
+func NewDefaultPluginsHub(kubeClient client.Client, searchForLegacyPodGroups,
 	gangScheduleKnative bool, queueLabelKey, nodePoolLabelKey string,
-	defaultPrioritiesConfigMapName, defaultPrioritiesConfigMapNamespace string) *PluginsHub {
+	defaultConfigPerTypeConfigMapName, defaultConfigPerTypeConfigMapNamespace string) *DefaultPluginsHub {
 	defaultGrouper := defaultgrouper.NewDefaultGrouper(queueLabelKey, nodePoolLabelKey, kubeClient)
-	defaultGrouper.SetDefaultPrioritiesConfigMapParams(defaultPrioritiesConfigMapName, defaultPrioritiesConfigMapNamespace)
+	defaultGrouper.SetDefaultConfigPerTypeConfigMapParams(defaultConfigPerTypeConfigMapName, defaultConfigPerTypeConfigMapNamespace)
 
 	kubeFlowDistributedGrouper := kubeflow.NewKubeflowDistributedGrouper(defaultGrouper)
 	mpiGrouper := mpi.NewMpiGrouper(kubeClient, kubeFlowDistributedGrouper)
@@ -253,6 +274,11 @@ func NewPluginsHub(kubeClient client.Client, searchForLegacyPodGroups,
 			Version: "v1alpha1",
 			Kind:    "PodGangSet",
 		}: groveGrouper,
+		{
+			Group:   "grove.io",
+			Version: "v1alpha1",
+			Kind:    "PodCliqueSet",
+		}: groveGrouper,
 	}
 
 	skipTopOwnerGrouper := skiptopowner.NewSkipTopOwnerGrouper(kubeClient, defaultGrouper, table)
@@ -276,7 +302,7 @@ func NewPluginsHub(kubeClient client.Client, searchForLegacyPodGroups,
 		}] = skipTopOwnerGrouper
 	}
 
-	return &PluginsHub{
+	return &DefaultPluginsHub{
 		defaultPlugin: defaultGrouper,
 		customPlugins: table,
 	}

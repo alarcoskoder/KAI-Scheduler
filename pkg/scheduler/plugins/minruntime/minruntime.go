@@ -4,7 +4,6 @@
 package minruntime
 
 import (
-	"github.com/xhit/go-str2duration/v2"
 	"slices"
 	"time"
 
@@ -37,26 +36,20 @@ type minruntimePlugin struct {
 	resolver *resolver
 }
 
-func parseMinRuntime(arguments map[string]string, minRuntimeConfig string) metav1.Duration {
-	minRuntime := arguments[minRuntimeConfig]
-	if len(minRuntime) == 0 {
+func parseMinRuntime(arguments framework.PluginArguments, minRuntimeConfig string) metav1.Duration {
+	minRuntime, err := arguments.GetDuration(minRuntimeConfig, 0*time.Second)
+	if err != nil {
+		log.InfraLogger.Errorf("Failed to parse %v as duration: %v, using default value 0s", minRuntimeConfig, err)
 		return metav1.Duration{Duration: 0 * time.Second}
 	}
-	duration, err := str2duration.ParseDuration(minRuntime)
-	if err != nil {
-		log.InfraLogger.Errorf("Failed to parse %v (%v): %v, using default value 0s", minRuntimeConfig, minRuntime, err)
-		duration = 0 * time.Second
-	}
-
-	if duration < 0 {
+	if minRuntime < 0 {
 		log.InfraLogger.Errorf("Parsed %v (%v) is negative, using default value 0s", minRuntimeConfig, minRuntime)
-		duration = 0 * time.Second
+		return metav1.Duration{Duration: 0 * time.Second}
 	}
-
-	return metav1.Duration{Duration: duration}
+	return metav1.Duration{Duration: minRuntime}
 }
 
-func New(arguments map[string]string) framework.Plugin {
+func New(arguments framework.PluginArguments) framework.Plugin {
 	plugin := &minruntimePlugin{}
 
 	plugin.defaultReclaimMinRuntime = parseMinRuntime(arguments, defaultReclaimMinRuntimeConfig)
@@ -126,9 +119,8 @@ func (mr *minruntimePlugin) reclaimScenarioValidatorFn(scenario api.ScenarioInfo
 		if !protected {
 			continue
 		}
-		numVictimTasks := int32(len(victimInfo.Tasks))
-		currentlyRunning := victimInfo.Job.GetActivelyRunningTasksCount()
-		if victimInfo.Job.MinAvailable > currentlyRunning-numVictimTasks {
+
+		if !validVictimForMinAvailable(victimInfo) {
 			return false
 		}
 	}
@@ -145,9 +137,8 @@ func (mr *minruntimePlugin) preemptScenarioValidatorFn(scenario api.ScenarioInfo
 		if !protected {
 			continue
 		}
-		numVictimTasks := int32(len(victimInfo.Tasks))
-		currentlyRunning := victimInfo.Job.GetActivelyRunningTasksCount()
-		if victimInfo.Job.MinAvailable > currentlyRunning-numVictimTasks {
+
+		if !validVictimForMinAvailable(victimInfo) {
 			return false
 		}
 	}
@@ -211,4 +202,28 @@ func (mr *minruntimePlugin) cacheReclaimProtection(pendingJob *podgroup_info.Pod
 		mr.reclaimProtectionCache[pendingJob.UID] = make(map[common_info.PodGroupID]bool)
 	}
 	mr.reclaimProtectionCache[pendingJob.UID][victim.UID] = protected
+}
+
+func validVictimForMinAvailable(victimInfo *api.VictimInfo) bool {
+	numVictimTasksPerSubGroup := map[string]int32{}
+	for _, task := range victimInfo.Tasks {
+		subGroupName := podgroup_info.DefaultSubGroup
+		if task.SubGroupName != "" {
+			subGroupName = task.SubGroupName
+		}
+		numVictimTasksPerSubGroup[subGroupName]++
+	}
+
+	numCurrentlyRunningSubGroup := map[string]int32{}
+	for subGroupName := range numVictimTasksPerSubGroup {
+		numCurrentlyRunningSubGroup[subGroupName] = int32(victimInfo.Job.GetSubGroups()[subGroupName].GetNumActiveUsedTasks())
+	}
+
+	for subGroupName, numVictims := range numVictimTasksPerSubGroup {
+		subGroupCurrentlyRunning := numCurrentlyRunningSubGroup[subGroupName]
+		if victimInfo.Job.GetSubGroups()[subGroupName].GetMinAvailable() > subGroupCurrentlyRunning-numVictims {
+			return false
+		}
+	}
+	return true
 }

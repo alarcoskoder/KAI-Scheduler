@@ -51,6 +51,10 @@ var (
 	queueFairShareCPU           *prometheus.GaugeVec
 	queueFairShareMemory        *prometheus.GaugeVec
 	queueFairShareGPU           *prometheus.GaugeVec
+	queueCPUUsage               *prometheus.GaugeVec
+	queueMemoryUsage            *prometheus.GaugeVec
+	queueGPUUsage               *prometheus.GaugeVec
+	usageQueryLatency           *prometheus.HistogramVec
 )
 
 func init() {
@@ -168,6 +172,33 @@ func InitMetrics(namespace string) {
 			Name:      "queue_fair_share_gpu",
 			Help:      "GPU Fair share of queue, as a gauge. Values in GPU devices",
 		}, []string{"queue_name"})
+
+	queueCPUUsage = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "queue_cpu_usage",
+			Help:      "CPU usage of queue, as a gauge. Units depend on UsageDB configuration",
+		}, []string{"queue_name"})
+	queueMemoryUsage = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "queue_memory_usage",
+			Help:      "Memory usage of queue, as a gauge. Units depend on UsageDB configuration",
+		}, []string{"queue_name"})
+	queueGPUUsage = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "queue_gpu_usage",
+			Help:      "GPU usage of queue, as a gauge. Units depend on UsageDB configuration",
+		}, []string{"queue_name"})
+
+	usageQueryLatency = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "usage_query_latency_milliseconds",
+			Help:      "Usage database query latency histogram in milliseconds",
+			Buckets:   prometheus.ExponentialBuckets(5, 2, 10),
+		}, []string{})
 }
 
 // UpdateOpenSessionDuration updates latency for open session, including all plugins
@@ -240,6 +271,23 @@ func ResetQueueFairShare() {
 	queueFairShareCPU.Reset()
 	queueFairShareMemory.Reset()
 	queueFairShareGPU.Reset()
+}
+
+// UpdateQueueUsage updates usage of queue for a resource
+func UpdateQueueUsage(queueName string, cpu, memory, gpu float64) {
+	queueCPUUsage.WithLabelValues(queueName).Set(cpu)
+	queueMemoryUsage.WithLabelValues(queueName).Set(memory)
+	queueGPUUsage.WithLabelValues(queueName).Set(gpu)
+}
+
+func ResetQueueUsage() {
+	queueCPUUsage.Reset()
+	queueMemoryUsage.Reset()
+	queueGPUUsage.Reset()
+}
+
+func UpdateUsageQueryLatency(latency time.Duration) {
+	usageQueryLatency.WithLabelValues().Observe(float64(latency.Milliseconds()))
 }
 
 // RegisterPreemptionAttempts records number of attempts for preemption

@@ -30,6 +30,8 @@ import (
 
 	kubeAiSchedulerinfo "github.com/NVIDIA/KAI-scheduler/pkg/apis/client/informers/externalversions"
 	enginev2alpha2 "github.com/NVIDIA/KAI-scheduler/pkg/apis/scheduling/v2alpha2"
+	"github.com/NVIDIA/KAI-scheduler/pkg/common/constants"
+	pg "github.com/NVIDIA/KAI-scheduler/pkg/common/podgroup"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/bindrequest_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/common_info"
@@ -41,6 +43,7 @@ import (
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/queue_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/cache/cluster_info/data_lister"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/cache/status_updater"
+	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/cache/usagedb"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/conf"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/log"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/utils"
@@ -58,6 +61,7 @@ type ClusterInfo struct {
 	includeCSIStorageObjects bool
 	nodePoolSelector         labels.Selector
 	fairnessLevelType        FairnessLevelType
+	collectUsageData         bool
 }
 
 type FairnessLevelType string
@@ -71,6 +75,7 @@ func New(
 	informerFactory informers.SharedInformerFactory,
 	kubeAiSchedulerInformerFactory kubeAiSchedulerinfo.SharedInformerFactory,
 	kueueInformerFactory kueueinformer.SharedInformerFactory,
+	usageLister *usagedb.UsageLister,
 	nodePoolParams *conf.SchedulingNodePoolParams,
 	restrictNodeScheduling bool,
 	clusterPodAffinityInfo pod_affinity.ClusterPodAffinityInfo,
@@ -96,7 +101,7 @@ func New(
 	}
 
 	return &ClusterInfo{
-		dataLister:               data_lister.New(informerFactory, kubeAiSchedulerInformerFactory, kueueInformerFactory, nodePoolSelector),
+		dataLister:               data_lister.New(informerFactory, kubeAiSchedulerInformerFactory, kueueInformerFactory, usageLister, nodePoolSelector),
 		nodePoolParams:           nodePoolParams,
 		restrictNodeScheduling:   restrictNodeScheduling,
 		clusterPodAffinityInfo:   clusterPodAffinityInfo,
@@ -104,6 +109,7 @@ func New(
 		nodePoolSelector:         nodePoolSelector,
 		fairnessLevelType:        fairnessLevelType,
 		podGroupSync:             podGroupSync,
+		collectUsageData:         usageLister != nil,
 	}, nil
 }
 
@@ -145,6 +151,15 @@ func (c *ClusterInfo) Snapshot() (*api.ClusterInfo, error) {
 	}
 	UpdateQueueHierarchy(queues)
 	snapshot.Queues = queues
+
+	usage, usageErr := c.snapshotQueueResourceUsage()
+	if usageErr != nil {
+		log.InfraLogger.V(2).Warnf("error snapshotting queue resource usage: %c", usageErr)
+	}
+	if usage == nil {
+		usage = queue_info.NewClusterUsage()
+	}
+	snapshot.QueueResourceUsage = *usage
 
 	snapshot.PodGroupInfos, err = c.snapshotPodGroups(snapshot.Queues, existingPods)
 	if err != nil {
@@ -290,6 +305,11 @@ func (c *ClusterInfo) snapshotPodGroups(
 		err = errors.WithStack(fmt.Errorf("error listing podgroups: %c", err))
 		return nil, err
 	}
+
+	for i := range podGroups {
+		podGroups[i] = podGroups[i].DeepCopy()
+	}
+
 	if c.podGroupSync != nil {
 		c.podGroupSync.SyncPodGroupsWithPendingUpdates(podGroups)
 	}
@@ -310,6 +330,11 @@ func (c *ClusterInfo) snapshotPodGroups(
 		log.InfraLogger.V(7).Infof("The priority of job <%s/%s> is <%s/%d>", podGroup.Namespace, podGroup.Name,
 			podGroup.Spec.PriorityClassName, podGroupInfo.Priority)
 
+		podGroupInfo.Preemptibility = pg.CalculatePreemptibility(podGroup.Spec.Preemptibility, podGroupInfo.Priority)
+		log.InfraLogger.V(7).Infof("The preemptibility of job <%s/%s> is <%s>", podGroup.Namespace, podGroup.Name,
+			podGroupInfo.Preemptibility)
+
+		c.setPodGroupWithIndex(podGroup, podGroupInfo)
 		rawPods, err := c.dataLister.ListPodByIndex(podByPodGroupIndexerName, podGroup.Name)
 		if err != nil {
 			log.InfraLogger.Errorf("failed to get indexed pods: %s", err)
@@ -323,8 +348,6 @@ func (c *ClusterInfo) snapshotPodGroups(
 			podInfo := c.getPodInfo(pod, existingPods)
 			podGroupInfo.AddTaskInfo(podInfo)
 		}
-
-		c.setPodGroupWithIndex(podGroup, podGroupInfo)
 		result[common_info.PodGroupID(podGroup.Name)] = podGroupInfo
 	}
 
@@ -397,7 +420,7 @@ func (c *ClusterInfo) snapshotTopologies() ([]*kueue.Topology, error) {
 }
 
 func getDefaultPriority(dataLister data_lister.DataLister) (int32, error) {
-	defaultPriority, found := int32(50), false
+	defaultPriority, found := int32(constants.DefaultPodGroupPriority), false
 	priorityClasses, err := dataLister.ListPriorityClasses()
 	if err != nil {
 		err = errors.WithStack(fmt.Errorf("error listing priorityclasses: %c", err))

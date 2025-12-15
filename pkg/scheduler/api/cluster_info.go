@@ -46,6 +46,7 @@ type ClusterInfo struct {
 	BindRequests                bindrequest_info.BindRequestMap
 	BindRequestsForDeletedNodes []*bindrequest_info.BindRequestInfo
 	Queues                      map[common_info.QueueID]*queue_info.QueueInfo
+	QueueResourceUsage          queue_info.ClusterUsage
 	Departments                 map[common_info.QueueID]*queue_info.QueueInfo
 	StorageClaims               map[storageclaim_info.Key]*storageclaim_info.StorageClaimInfo
 	StorageCapacities           map[common_info.StorageCapacityID]*storagecapacity_info.StorageCapacityInfo
@@ -57,16 +58,17 @@ type ClusterInfo struct {
 
 func NewClusterInfo() *ClusterInfo {
 	return &ClusterInfo{
-		Pods:              []*v1.Pod{},
-		Nodes:             make(map[string]*node_info.NodeInfo),
-		BindRequests:      make(bindrequest_info.BindRequestMap),
-		PodGroupInfos:     make(map[common_info.PodGroupID]*podgroup_info.PodGroupInfo),
-		Queues:            make(map[common_info.QueueID]*queue_info.QueueInfo),
-		Departments:       make(map[common_info.QueueID]*queue_info.QueueInfo),
-		StorageClaims:     make(map[storageclaim_info.Key]*storageclaim_info.StorageClaimInfo),
-		StorageCapacities: make(map[common_info.StorageCapacityID]*storagecapacity_info.StorageCapacityInfo),
-		ConfigMaps:        make(map[common_info.ConfigMapID]*configmap_info.ConfigMapInfo),
-		Topologies:        []*kueue.Topology{},
+		Pods:               []*v1.Pod{},
+		Nodes:              make(map[string]*node_info.NodeInfo),
+		BindRequests:       make(bindrequest_info.BindRequestMap),
+		PodGroupInfos:      make(map[common_info.PodGroupID]*podgroup_info.PodGroupInfo),
+		Queues:             make(map[common_info.QueueID]*queue_info.QueueInfo),
+		QueueResourceUsage: *queue_info.NewClusterUsage(),
+		Departments:        make(map[common_info.QueueID]*queue_info.QueueInfo),
+		StorageClaims:      make(map[storageclaim_info.Key]*storageclaim_info.StorageClaimInfo),
+		StorageCapacities:  make(map[common_info.StorageCapacityID]*storagecapacity_info.StorageCapacityInfo),
+		ConfigMaps:         make(map[common_info.ConfigMapID]*configmap_info.ConfigMapInfo),
+		Topologies:         []*kueue.Topology{},
 	}
 }
 
@@ -91,16 +93,16 @@ func (ci ClusterInfo) String() string {
 	if len(ci.PodGroupInfos) != 0 {
 		str = str + "PodGroupInfos:\n"
 		for _, job := range ci.PodGroupInfos {
-			str = str + fmt.Sprintf("\t Job(%s) name(%s) minAvailable(%v)\n",
-				job.UID, job.Name, job.MinAvailable)
+			str = str + fmt.Sprintf("\t Job(%s) name(%s)\n",
+				job.UID, job.Name)
 
-			for _, subGroup := range job.SubGroups {
+			for _, subGroup := range job.GetSubGroups() {
 				str = str + fmt.Sprintf("\t\t subGroup(%s), minAvailable(%v)\n",
 					subGroup.GetName(), subGroup.GetMinAvailable())
 			}
 
 			i := 0
-			for _, task := range job.PodInfos {
+			for _, task := range job.GetAllPodsMap() {
 				str = str + fmt.Sprintf("\t\t task %d: %v\n", i, task)
 				i++
 			}

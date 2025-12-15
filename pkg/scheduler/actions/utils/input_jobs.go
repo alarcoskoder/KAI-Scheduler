@@ -29,12 +29,12 @@ func (jobsOrder *JobsOrderByQueues) InitializeWithJobs(
 			continue
 		}
 
-		if jobsOrder.jobsOrderInitOptions.FilterNonPreemptible && !job.IsPreemptibleJob(jobsOrder.ssn.IsInferencePreemptible()) {
+		if jobsOrder.jobsOrderInitOptions.FilterNonPreemptible && !job.IsPreemptibleJob() {
 			continue
 		}
 
 		isJobActive := false
-		for _, task := range job.PodInfos {
+		for _, task := range job.GetAllPodsMap() {
 			if pod_status.IsActiveAllocatedStatus(task.Status) {
 				isJobActive = true
 				break

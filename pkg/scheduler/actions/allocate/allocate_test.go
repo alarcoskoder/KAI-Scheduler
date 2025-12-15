@@ -24,7 +24,6 @@ import (
 	"testing"
 
 	. "go.uber.org/mock/gomock"
-	"k8s.io/utils/pointer"
 
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/actions/allocate"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/actions/integration_tests/integration_tests_utils"
@@ -1467,7 +1466,7 @@ func getTestsMetadata() []integration_tests_utils.TestTopologyMetadata {
 		},
 		{
 			TestTopologyBasic: test_utils.TestTopologyBasic{
-				Name: "Allocate inference over quota",
+				Name: "Attempt to allocate inference over quota",
 				Jobs: []*jobs_fake.TestJobBasic{
 					{
 						Name:                "pending_job0",
@@ -1499,8 +1498,8 @@ func getTestsMetadata() []integration_tests_utils.TestTopologyMetadata {
 				JobExpectedResults: map[string]test_utils.TestExpectedResultBasic{
 					"pending_job0": {
 						GPUsRequired: 1,
-						Status:       pod_status.Binding,
-						NodeName:     "node0",
+						Status:       pod_status.Pending,
+						NodeName:     "",
 					},
 				},
 				Mocks: &test_utils.TestMock{
@@ -1772,7 +1771,7 @@ func TestHandleElasticJobCommitFailure(t *testing.T) {
 					RequiredGPUsPerTask: 1,
 					Priority:            constants.PriorityTrainNumber,
 					QueueName:           "queue1",
-					MinAvailable:        pointer.Int32(1),
+					RootSubGroupSet:     jobs_fake.DefaultSubGroup(1),
 					Tasks: []*tasks_fake.TestTaskBasic{
 						{
 							State: pod_status.Pending,

@@ -47,10 +47,16 @@ type TestNodeBasic struct {
 	CPUMillis       float64
 	GpuMemorySynced *bool
 	MaxTaskNum      *int
+	Labels          map[string]string
 }
 
-func BuildNodesInfoMap(Nodes map[string]TestNodeBasic, tasksToNodeMap map[string]pod_info.PodsMap,
+func BuildNodesInfoMap(
+	Nodes map[string]TestNodeBasic, tasksToNodeMap map[string]pod_info.PodsMap,
+	clusterPodAffinityInfo *cache.K8sClusterPodAffinityInfo,
 ) map[string]*node_info.NodeInfo {
+	if clusterPodAffinityInfo == nil {
+		clusterPodAffinityInfo = cache.NewK8sClusterPodAffinityInfo()
+	}
 	nodesInfoMap := map[string]*node_info.NodeInfo{}
 
 	for nodeName, nodeMetadata := range Nodes {
@@ -59,7 +65,7 @@ func BuildNodesInfoMap(Nodes map[string]TestNodeBasic, tasksToNodeMap map[string
 			tasksOfNode = tasksToNodeMap[nodeName]
 		}
 
-		nodeInfo := buildNodeInfo(nodeName, &nodeMetadata, tasksOfNode)
+		nodeInfo := buildNodeInfo(nodeName, &nodeMetadata, tasksOfNode, clusterPodAffinityInfo)
 		if nodeMetadata.GpuMemorySynced != nil {
 			nodeInfo.GpuMemorySynced = *nodeMetadata.GpuMemorySynced
 		}
@@ -84,7 +90,9 @@ func BuildNode(node string, capacity *v1.ResourceList, allocatable *v1.ResourceL
 }
 
 func buildNodeInfo(
-	nodeName string, nodeMetadata *TestNodeBasic, tasksOfNode pod_info.PodsMap) *node_info.NodeInfo {
+	nodeName string, nodeMetadata *TestNodeBasic, tasksOfNode pod_info.PodsMap,
+	clusterPodAffinityInfo *cache.K8sClusterPodAffinityInfo,
+) *node_info.NodeInfo {
 	nodeGpuCount := strconv.Itoa(nodeMetadata.GPUs)
 	nodeAllocatableGPUs := nodeGpuCount
 	if nodeMetadata.MigStrategy == node_info.MigStrategyMixed {
@@ -121,10 +129,12 @@ func buildNodeInfo(
 		commonconstants.MigStrategyLabel: string(nodeMetadata.MigStrategy),
 		tasks_fake.NodeAffinityKey:       nodeName,
 	}
+	for labelKey, labelValue := range nodeMetadata.Labels {
+		node.Labels[labelKey] = labelValue
+	}
 	if nodeMetadata.GPUMemory > 0 {
 		node.Labels[node_info.GpuMemoryLabel] = strconv.Itoa(nodeMetadata.GPUMemory)
 	}
-	clusterPodAffinityInfo := cache.NewK8sClusterPodAffinityInfo()
 	podAffinityInfo := cluster_info.NewK8sNodePodAffinityInfo(node, clusterPodAffinityInfo)
 	nodeInfo := node_info.NewNodeInfo(node, podAffinityInfo)
 

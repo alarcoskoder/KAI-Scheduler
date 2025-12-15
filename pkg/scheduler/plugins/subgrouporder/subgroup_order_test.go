@@ -10,7 +10,7 @@ import (
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/common_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/pod_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/pod_status"
-	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/podgroup_info"
+	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/podgroup_info/subgroup_info"
 )
 
 func makeAllocatedPodInfo(subGroupName string, taskIndex int) *pod_info.PodInfo {
@@ -21,8 +21,8 @@ func makeAllocatedPodInfo(subGroupName string, taskIndex int) *pod_info.PodInfo 
 	}
 }
 
-func makeSubGroupInfoWithAllocated(minAvailable int32, numAllocated int, name string) *podgroup_info.SubGroupInfo {
-	sg := podgroup_info.NewSubGroupInfo(name, minAvailable)
+func makeSubGroupInfoWithAllocated(minAvailable int32, numAllocated int, name string) *subgroup_info.PodSet {
+	sg := subgroup_info.NewPodSet(name, minAvailable, nil)
 	for i := 0; i < numAllocated; i++ {
 		pod := makeAllocatedPodInfo(name, i)
 		sg.AssignTask(pod)
@@ -93,9 +93,9 @@ func TestSubGroupOrderFn(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			left := makeSubGroupInfoWithAllocated(tt.lMinAvailable, tt.lAllocated, "l")
 			right := makeSubGroupInfoWithAllocated(tt.rMinAvailable, tt.rAllocated, "r")
-			got := SubGroupOrderFn(left, right)
+			got := PodSetOrderFn(left, right)
 			if got != tt.want {
-				t.Errorf("SubGroupOrderFn() = %v, want %v", got, tt.want)
+				t.Errorf("PodSetOrderFn() = %v, want %v", got, tt.want)
 			}
 		})
 	}

@@ -72,9 +72,9 @@ func main() {
 		DetailedFitErrors:           snapshot.SchedulerParams.DetailedFitErrors,
 		ScheduleCSIStorage:          snapshot.SchedulerParams.ScheduleCSIStorage,
 		FullHierarchyFairness:       snapshot.SchedulerParams.FullHierarchyFairness,
-		NodeLevelScheduler:          snapshot.SchedulerParams.NodeLevelScheduler,
 		AllowConsolidatingReclaim:   snapshot.SchedulerParams.AllowConsolidatingReclaim,
 		NumOfStatusRecordingWorkers: snapshot.SchedulerParams.NumOfStatusRecordingWorkers,
+		DiscoveryClient:             kubeClient.Discovery(),
 	}
 
 	schedulerCache := cache.New(schedulerCacheParams)
@@ -211,21 +211,21 @@ func loadClientsWithSnapshot(rawObjects *snapshot.RawKubernetesObjects) (*fake.C
 	}
 
 	for _, resourceClaim := range rawObjects.ResourceClaims {
-		_, err := kubeClient.ResourceV1beta1().ResourceClaims(resourceClaim.Namespace).Create(context.TODO(), resourceClaim, v1.CreateOptions{})
+		_, err := kubeClient.ResourceV1().ResourceClaims(resourceClaim.Namespace).Create(context.TODO(), resourceClaim, v1.CreateOptions{})
 		if err != nil {
 			log.InfraLogger.Errorf("Failed to create resource claim: %v", err)
 		}
 	}
 
 	for _, resourceSlice := range rawObjects.ResourceSlices {
-		_, err := kubeClient.ResourceV1beta1().ResourceSlices().Create(context.TODO(), resourceSlice, v1.CreateOptions{})
+		_, err := kubeClient.ResourceV1().ResourceSlices().Create(context.TODO(), resourceSlice, v1.CreateOptions{})
 		if err != nil {
 			log.InfraLogger.Errorf("Failed to create resource slice: %v", err)
 		}
 	}
 
 	for _, deviceClass := range rawObjects.DeviceClasses {
-		_, err := kubeClient.ResourceV1beta1().DeviceClasses().Create(context.TODO(), deviceClass, v1.CreateOptions{})
+		_, err := kubeClient.ResourceV1().DeviceClasses().Create(context.TODO(), deviceClass, v1.CreateOptions{})
 		if err != nil {
 			log.InfraLogger.Errorf("Failed to create device class: %v", err)
 		}

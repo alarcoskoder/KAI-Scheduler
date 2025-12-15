@@ -7,15 +7,18 @@ import (
 	"fmt"
 	"time"
 
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/common_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/pod_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/pod_status"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/podgroup_info"
+	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/podgroup_info/subgroup_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/queue_info"
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/framework"
 )
 
 type TestScenario struct {
@@ -42,10 +45,11 @@ var _ = Describe("MinRuntime Plugin", func() {
 	// Helper function to create a PodGroupInfo with a specific last start timestamp
 	createPodGroup := func(uid common_info.PodGroupID, queue common_info.QueueID, lastStartTime *time.Time, minAvailable int32, podsCount int) *podgroup_info.PodGroupInfo {
 		pg := &podgroup_info.PodGroupInfo{
-			UID:            uid,
-			Queue:          queue,
-			MinAvailable:   minAvailable,
-			PodInfos:       make(pod_info.PodsMap),
+			UID:   uid,
+			Queue: queue,
+			PodSets: map[string]*subgroup_info.PodSet{
+				podgroup_info.DefaultSubGroup: subgroup_info.NewPodSet(podgroup_info.DefaultSubGroup, minAvailable, nil),
+			},
 			PodStatusIndex: make(map[pod_status.PodStatus]pod_info.PodsMap),
 			NodesFitErrors: make(map[common_info.PodID]*common_info.FitErrors),
 		}
@@ -62,7 +66,7 @@ var _ = Describe("MinRuntime Plugin", func() {
 				Job:    uid,
 				Status: pod_status.Running,
 			}
-			pg.PodInfos[podID] = podInfo
+			pg.PodSets[podgroup_info.DefaultSubGroup].AssignTask(podInfo)
 
 			// Initialize the PodStatusIndex map for this status if it doesn't exist
 			if _, found := pg.PodStatusIndex[pod_status.Running]; !found {
@@ -341,7 +345,7 @@ var _ = Describe("MinRuntime Plugin", func() {
 				"5s", "10s", "10m5s", "1m", "1.5s", "2m30s", "1h", "1h30m", "2h45m15s", "2d4h30m", "5w4d12h",
 			}
 
-			args := map[string]string{}
+			args := framework.PluginArguments{}
 
 			for _, durationStr := range validDurations {
 				args[defaultReclaimMinRuntimeConfig] = durationStr
@@ -356,7 +360,7 @@ var _ = Describe("MinRuntime Plugin", func() {
 				"5", "1h2", "2h45m15", "abc", "1h-30m", "dfdsfdfdf",
 			}
 
-			args := map[string]string{}
+			args := framework.PluginArguments{}
 
 			for _, durationStr := range invalidDurations {
 				args[defaultPreemptMinRuntimeConfig] = durationStr
@@ -371,7 +375,7 @@ var _ = Describe("MinRuntime Plugin", func() {
 				"-5s", "-10m", "-1h", "-2d", "-3w",
 			}
 
-			args := map[string]string{}
+			args := framework.PluginArguments{}
 
 			for _, durationStr := range negativeDurations {
 				args[defaultReclaimMinRuntimeConfig] = durationStr

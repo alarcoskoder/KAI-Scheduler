@@ -11,13 +11,13 @@ import (
 
 	lws "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
-	nvidiav1 "github.com/NVIDIA/gpu-operator/api/nvidia/v1"
 	"k8s.io/api/node/v1alpha1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	runtimeClient "sigs.k8s.io/controller-runtime/pkg/client"
 
+	kaiv1 "github.com/NVIDIA/KAI-scheduler/pkg/apis/kai/v1"
 	v2 "github.com/NVIDIA/KAI-scheduler/pkg/apis/scheduling/v2"
 	"github.com/NVIDIA/KAI-scheduler/pkg/apis/scheduling/v2alpha2"
 	kubeAiSchedulerV2alpha2 "github.com/NVIDIA/KAI-scheduler/pkg/apis/scheduling/v2alpha2"
@@ -51,6 +51,9 @@ func initConnectivity() error {
 		if err != nil {
 			panic(err)
 		}
+		if err = kaiv1.AddToScheme(controllerClient.Scheme()); err != nil {
+			return fmt.Errorf("failed to add kai v1 to scheme: %w", err)
+		}
 		if err = v1alpha1.AddToScheme(controllerClient.Scheme()); err != nil {
 			return fmt.Errorf("failed to add engine v1alpha1 to scheme: %w", err)
 		}
@@ -65,9 +68,6 @@ func initConnectivity() error {
 		}
 		if err = kwokopv1beta1.AddToScheme(controllerClient.Scheme()); err != nil {
 			return fmt.Errorf("failed to add scheduling v1beta1 to scheme: %w", err)
-		}
-		if err = nvidiav1.AddToScheme(controllerClient.Scheme()); err != nil {
-			return fmt.Errorf("failed to add nvidiav1 to scheme: %w", err)
 		}
 		if err = lws.AddToScheme(controllerClient.Scheme()); err != nil {
 			return fmt.Errorf("failed to add lws to scheme: %w", err)

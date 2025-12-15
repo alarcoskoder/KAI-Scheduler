@@ -42,7 +42,6 @@ const (
 	GPUGroup                           = "runai-gpu-group"
 	ReceivedResourceTypeAnnotationName = "received-resource-type"
 	WholeGpuIndicator                  = "-2"
-	SubGroupLabelKey                   = "kai.scheduler/subgroup-name"
 )
 
 type ResourceRequestType string
@@ -178,7 +177,7 @@ func NewTaskInfoWithBindRequest(pod *v1.Pod, bindRequest *bindrequest_info.BindR
 		Job:                            getPodGroupID(pod),
 		Name:                           pod.Name,
 		Namespace:                      pod.Namespace,
-		SubGroupName:                   pod.Labels[SubGroupLabelKey],
+		SubGroupName:                   pod.Labels[commonconstants.SubGroupLabelKey],
 		NodeName:                       nodeName,
 		Status:                         getTaskStatus(pod, bindRequest),
 		IsVirtualStatus:                false,
@@ -311,6 +310,11 @@ func getPodResourceRequest(pod *v1.Pod) *resource_info.ResourceRequirements {
 		}
 	}
 
+	if pod.Spec.Overhead != nil {
+		overheadReq := resource_info.RequirementsFromResourceList(pod.Spec.Overhead)
+		result.Add(&overheadReq.BaseResource)
+	}
+
 	return result
 }
 
@@ -367,10 +371,6 @@ func getTaskStatus(pod *v1.Pod, bindRequest *bindrequest_info.BindRequestInfo) p
 }
 
 func (pi *PodInfo) updatePodAdditionalFields(bindRequest *bindrequest_info.BindRequestInfo) {
-	if len(pi.Job) == 0 {
-		return
-	}
-
 	if bindRequest != nil && len(bindRequest.BindRequest.Spec.SelectedGPUGroups) > 0 {
 		pi.GPUGroups = bindRequest.BindRequest.Spec.SelectedGPUGroups
 	} else {

@@ -8,13 +8,16 @@ import (
 	"strconv"
 	"time"
 
+	kueuev1alpha1 "sigs.k8s.io/kueue/apis/kueue/v1alpha1"
+
 	. "go.uber.org/mock/gomock"
 	"gopkg.in/yaml.v2"
-	"k8s.io/api/resource/v1beta1"
+	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	enginev2 "github.com/NVIDIA/KAI-scheduler/pkg/apis/scheduling/v2"
 	_ "github.com/NVIDIA/KAI-scheduler/pkg/scheduler/actions"
@@ -22,6 +25,7 @@ import (
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/node_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/podgroup_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/queue_info"
+	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/cache"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/cache/cluster_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/conf"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/conf_util"
@@ -44,7 +48,9 @@ func CreateFakeSession(schedulerConfig *TestSessionConfig,
 	testMetadata TestTopologyBasic,
 	controller *Controller,
 	createCacheMockIfNotExists bool,
-	isInferencePreemptible bool) *framework.Session {
+	topologies []*kueuev1alpha1.Topology,
+	clusterPodAffinityInfo *cache.K8sClusterPodAffinityInfo,
+) *framework.Session {
 	ssn := framework.Session{
 		Nodes: nodesInfoMap,
 		Config: &conf.SchedulerConfiguration{
@@ -56,19 +62,23 @@ func CreateFakeSession(schedulerConfig *TestSessionConfig,
 		},
 		Queues:        queueInfoMap,
 		PodGroupInfos: jobInfoMap,
+		Topologies:    topologies,
 	}
-	ssn.OverrideInferencePreemptible(isInferencePreemptible)
 	ssn.OverrideMaxNumberConsolidationPreemptees(-1)
 	ssn.OverrideAllowConsolidatingReclaim(true)
 	ssn.OverrideSchedulerName(schedulerName)
 
 	if controller != nil || createCacheMockIfNotExists {
-		ssn.Cache = GetTestCacheMock(controller, testMetadata.Mocks, getDRAObjects(testMetadata))
+		ssn.Cache = GetTestCacheMock(controller, testMetadata.Mocks, getDRAObjects(testMetadata), clusterPodAffinityInfo)
 	}
 
 	if schedulerConfig != nil {
 		addSessionPlugins(&ssn, schedulerConfig.Plugins, createCacheMockIfNotExists, schedulerConfig.CachePlugins)
 	}
+
+	// Some plugins are using informers wrappers (such as the DRA manager) which require a moment to sync
+	// without this some tests might have flaky results.
+	time.Sleep(time.Millisecond)
 
 	return &ssn
 }
@@ -244,7 +254,9 @@ func BuildSession(testMetadata TestTopologyBasic, controller *Controller) *frame
 
 	addDefaultDepartmentIfNeeded(&testMetadata)
 	jobsInfoMap, tasksToNodeMap, _ := jobs_fake.BuildJobsAndTasksMaps(testMetadata.Jobs)
-	nodesInfoMap := nodes_fake.BuildNodesInfoMap(testMetadata.Nodes, tasksToNodeMap)
+
+	clusterPodAffinityInfo := cache.NewK8sClusterPodAffinityInfo()
+	nodesInfoMap := nodes_fake.BuildNodesInfoMap(testMetadata.Nodes, tasksToNodeMap, clusterPodAffinityInfo)
 	queueInfoMap := BuildQueueInfoMap(testMetadata)
 
 	departmentInfoMap := BuildDepartmentInfoMap(testMetadata)
@@ -257,7 +269,7 @@ func BuildSession(testMetadata TestTopologyBasic, controller *Controller) *frame
 		testMetadata.Mocks.Cache == nil
 
 	return CreateFakeSession(&schedulerConfig, nodesInfoMap, jobsInfoMap, queueInfoMap, testMetadata,
-		controller, createCacheMockIfNotExists, true)
+		controller, createCacheMockIfNotExists, testMetadata.Topologies, clusterPodAffinityInfo)
 }
 
 func mergeQueues(queuesMaps ...map[common_info.QueueID]*queue_info.QueueInfo) map[common_info.QueueID]*queue_info.QueueInfo {
@@ -296,50 +308,48 @@ func addSessionPlugins(ssn *framework.Session, tiers []conf.Tier, cacheMockExist
 func getDRAObjects(testMetadata TestTopologyBasic) []runtime.Object {
 	var objects []runtime.Object
 	for _, deviceClass := range testMetadata.DeviceClasses {
-		deviceClassObject := v1beta1.DeviceClass{
+		deviceClassObject := resourceapi.DeviceClass{
 			TypeMeta: metav1.TypeMeta{
 				Kind:       "DeviceClass",
-				APIVersion: "v1beta1",
+				APIVersion: "v1",
 			},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:            deviceClass,
 				ResourceVersion: "0",
 			},
-			Spec: v1beta1.DeviceClassSpec{},
+			Spec: resourceapi.DeviceClassSpec{},
 		}
 		objects = append(objects, &deviceClassObject)
 	}
 
 	for _, resourceSlice := range testMetadata.ResourceSlices {
-		resourceSliceObject := v1beta1.ResourceSlice{
+		resourceSliceObject := resourceapi.ResourceSlice{
 			TypeMeta: metav1.TypeMeta{
 				Kind:       "ResourceSlice",
-				APIVersion: "v1beta1",
+				APIVersion: "v1",
 			},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:            resourceSlice.Name,
 				ResourceVersion: "0",
 			},
-			Spec: v1beta1.ResourceSliceSpec{
+			Spec: resourceapi.ResourceSliceSpec{
 				Driver: "nvidia.com/gpu",
-				Pool: v1beta1.ResourcePool{
+				Pool: resourceapi.ResourcePool{
 					Name:               resourceSlice.NodeName,
 					ResourceSliceCount: int64(len(testMetadata.ResourceSlices)),
 				},
-				NodeName:     resourceSlice.NodeName,
 				NodeSelector: resourceSlice.NodeSelector,
-				AllNodes:     resourceSlice.AllNodes,
+				NodeName:     ptr.To(resourceSlice.NodeName),
+				AllNodes:     ptr.To(resourceSlice.AllNodes),
 			},
 		}
 
-		devices := make([]v1beta1.Device, resourceSlice.Count)
+		devices := make([]resourceapi.Device, resourceSlice.Count)
 		for i := range devices {
 			devices[i].Name = strconv.Itoa(i)
-			devices[i].Basic = &v1beta1.BasicDevice{
-				Capacity: map[v1beta1.QualifiedName]v1beta1.DeviceCapacity{
-					"gpu": {
-						Value: resource.MustParse("1"),
-					},
+			devices[i].Capacity = map[resourceapi.QualifiedName]resourceapi.DeviceCapacity{
+				"gpu": {
+					Value: resource.MustParse("1"),
 				},
 			}
 		}
@@ -349,29 +359,31 @@ func getDRAObjects(testMetadata TestTopologyBasic) []runtime.Object {
 	}
 
 	for _, resourceClaim := range testMetadata.ResourceClaims {
-		resourceClaimObject := v1beta1.ResourceClaim{
+		resourceClaimObject := resourceapi.ResourceClaim{
 			TypeMeta: metav1.TypeMeta{
 				Kind:       "ResourceClaim",
-				APIVersion: "v1beta1",
+				APIVersion: "v1",
 			},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:            resourceClaim.Name,
 				Namespace:       resourceClaim.Namespace,
 				ResourceVersion: "0",
 			},
-			Spec: v1beta1.ResourceClaimSpec{
-				Devices: v1beta1.DeviceClaim{
-					Requests: []v1beta1.DeviceRequest{
+			Spec: resourceapi.ResourceClaimSpec{
+				Devices: resourceapi.DeviceClaim{
+					Requests: []resourceapi.DeviceRequest{
 						{
-							Name:            "request",
-							DeviceClassName: resourceClaim.DeviceClassName,
-							AllocationMode:  v1beta1.DeviceAllocationModeExactCount,
-							Count:           resourceClaim.Count,
+							Name: "request",
+							Exactly: &resourceapi.ExactDeviceRequest{
+								DeviceClassName: resourceClaim.DeviceClassName,
+								AllocationMode:  resourceapi.DeviceAllocationModeExactCount,
+								Count:           resourceClaim.Count,
+							},
 						},
 					},
 				},
 			},
-			Status: v1beta1.ResourceClaimStatus{
+			Status: resourceapi.ResourceClaimStatus{
 				ReservedFor: resourceClaim.ReservedFor,
 			},
 		}

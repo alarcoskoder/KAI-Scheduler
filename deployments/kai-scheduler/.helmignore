@@ -34,3 +34,5 @@ stable-index/*
 *.iml
 .circleci/
 .github/
+tests/*
+

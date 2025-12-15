@@ -28,7 +28,6 @@ import (
 	"go.uber.org/multierr"
 	"golang.org/x/exp/maps"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 
 	commonconstants "github.com/NVIDIA/KAI-scheduler/pkg/common/constants"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/common_info"
@@ -41,6 +40,7 @@ import (
 	sc_info "github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/storagecapacity_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/storageclaim_info"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/conf"
+	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/k8s_utils"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/log"
 )
 
@@ -61,6 +61,8 @@ const (
 	MigStrategyMixed  MigStrategy = "mixed"
 	migResourcePrefix             = "nvidia.com/mig-"
 )
+
+type NodeSet []*NodeInfo
 
 // NodeInfo is node level aggregated information.
 type NodeInfo struct {
@@ -258,9 +260,23 @@ func (ni *NodeInfo) FittingError(task *pod_info.PodInfo, isGangTask bool) *commo
 				task.ResReq.GetNumOfGpuDevices(), ni.getResourceGpuPortion(task.ResReq), requestedResources.GpuMemory())
 		}
 
-		return common_info.NewFitErrorInsufficientResource(
+		messageSuffix := ""
+		if len(task.Pod.Spec.Overhead) > 0 {
+			// Adding to node idle instead of subtracting from pod requested resources
+			idleResourcesWithOverhead := ni.Idle.Clone()
+			idleResourcesWithOverhead.Add(resource_info.ResourceFromResourceList(task.Pod.Spec.Overhead))
+			enoughResourcesWithoutOverhead := ni.lessEqualTaskToNodeResources(task.ResReq, idleResourcesWithOverhead)
+			if enoughResourcesWithoutOverhead {
+				messageSuffix = fmt.Sprintf("%s. The overhead resources are %v", common_info.OverheadMessage,
+					k8s_utils.StringResourceList(task.Pod.Spec.Overhead))
+			}
+		}
+
+		fitError := common_info.NewFitErrorInsufficientResource(
 			task.Name, task.Namespace, ni.Name, task.ResReq, totalUsed, totalCapability, ni.MemoryOfEveryGpuOnNode,
-			isGangTask)
+			isGangTask, messageSuffix)
+
+		return fitError
 	}
 
 	allocatable, err := ni.isTaskStorageAllocatable(task)
@@ -622,8 +638,7 @@ func getNodeGpuMemory(node *v1.Node) (int64, bool) {
 		gpuMemoryLabelValue = convertBytesToMib(gpuMemoryLabelValue)
 	}
 
-	gpuMemoryInMb := convertMibToMb(gpuMemoryLabelValue)
-	return gpuMemoryInMb - (gpuMemoryInMb % 100), true // Floor the memory count to make sure its divided by 100 so there will not be 2 jobs that get same bytes
+	return gpuMemoryLabelValue - (gpuMemoryLabelValue % 100), true // Floor the memory count to make sure its divided by 100 so there will not be 2 jobs that get same bytes
 }
 
 func checkGpuMemoryIsInMib(gpuMemoryValue int64) bool {
@@ -632,12 +647,6 @@ func checkGpuMemoryIsInMib(gpuMemoryValue int64) bool {
 
 func convertBytesToMib(gpuMemoryValue int64) int64 {
 	return gpuMemoryValue / BitToMib
-}
-
-func convertMibToMb(countInMib int64) int64 {
-	resourceMemory := resource.NewQuantity(countInMib*1024*1024, resource.BinarySI)
-	mbResourceMemory := resource.NewQuantity(resourceMemory.Value(), resource.DecimalSI)
-	return mbResourceMemory.Value() / MbToBRatio
 }
 
 func (ni *NodeInfo) IsCPUOnlyNode() bool {

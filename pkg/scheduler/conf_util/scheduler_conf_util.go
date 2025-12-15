@@ -24,7 +24,7 @@ import (
 	"io/ioutil"
 	"strings"
 
-	"gopkg.in/yaml.v2"
+	"sigs.k8s.io/yaml"
 
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/conf"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/framework"
@@ -65,7 +65,7 @@ func ResolveConfigurationFromFile(confPath string) (*conf.SchedulerConfiguration
 		return nil, err
 	}
 
-	defaultConfig, err := loadSchedulerConf(defaultSchedulerConf)
+	defaultConfig, err := GetDefaultSchedulerConf()
 	if err != nil {
 		return nil, err
 	}
@@ -103,6 +103,10 @@ func GetActionsFromConfig(conf *conf.SchedulerConfiguration) ([]framework.Action
 		}
 	}
 	return actions, nil
+}
+
+func GetDefaultSchedulerConf() (*conf.SchedulerConfiguration, error) {
+	return loadSchedulerConf(defaultSchedulerConf)
 }
 
 func loadSchedulerConf(confStr string) (*conf.SchedulerConfiguration, error) {

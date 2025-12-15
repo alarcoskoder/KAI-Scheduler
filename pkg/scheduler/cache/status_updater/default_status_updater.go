@@ -18,7 +18,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
 
-	kubeaischedulerver "github.com/NVIDIA/KAI-scheduler/pkg/apis/client/clientset/versioned"
+	kai "github.com/NVIDIA/KAI-scheduler/pkg/apis/client/clientset/versioned"
 	enginev2alpha2 "github.com/NVIDIA/KAI-scheduler/pkg/apis/scheduling/v2alpha2"
 	commonconstants "github.com/NVIDIA/KAI-scheduler/pkg/common/constants"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/common_info"
@@ -57,7 +57,7 @@ type inflightUpdate struct {
 
 type defaultStatusUpdater struct {
 	kubeClient        kubernetes.Interface
-	kubeaischedClient kubeaischedulerver.Interface
+	kaiClient         kai.Interface
 	recorder          record.EventRecorder
 	detailedFitErrors bool
 	nodePoolLabelKey  string
@@ -77,7 +77,7 @@ type defaultStatusUpdater struct {
 
 func New(
 	kubeClient kubernetes.Interface,
-	kubeaischedClient kubeaischedulerver.Interface,
+	kaiClient kai.Interface,
 	recorder record.EventRecorder,
 	numberOfWorkers int,
 	detailedFitErrors bool,
@@ -85,7 +85,7 @@ func New(
 ) *defaultStatusUpdater {
 	return &defaultStatusUpdater{
 		kubeClient:        kubeClient,
-		kubeaischedClient: kubeaischedClient,
+		kaiClient:         kaiClient,
 		recorder:          recorder,
 		detailedFitErrors: detailedFitErrors,
 		nodePoolLabelKey:  nodePoolLabelKey,
@@ -98,7 +98,9 @@ func New(
 }
 
 func (su *defaultStatusUpdater) Evicted(
-	evictedPodGroup *enginev2alpha2.PodGroup, evictionMetadata eviction_info.EvictionMetadata, message string,
+	evictedPodGroup *enginev2alpha2.PodGroup,
+	evictionMetadata eviction_info.EvictionMetadata,
+	message string,
 ) {
 	evictionEventMetadata := map[string]string{
 		evictionGangSize:  strconv.Itoa(evictionMetadata.EvictionGangSize),
@@ -241,19 +243,35 @@ func (su *defaultStatusUpdater) markTaskUnschedulable(pod *v1.Pod, message strin
 }
 
 func (su *defaultStatusUpdater) recordStaleJobEvent(job *podgroup_info.PodGroupInfo) {
-	su.recorder.Eventf(job.PodGroup, v1.EventTypeNormal, "StaleJob",
-		fmt.Sprintf("Job is stale. %d pods are active, minMember is %d",
-			job.GetNumActiveUsedTasks(), job.MinAvailable))
+	subGroupMessages := ""
+
+	totalActivePods := 0
+	totalMinAvailable := int32(0)
+	for _, subGroup := range job.GetSubGroups() {
+		activeTasks := subGroup.GetNumActiveUsedTasks()
+		minAvailable := subGroup.GetMinAvailable()
+		totalActivePods += activeTasks
+		totalMinAvailable += minAvailable
+
+		if !subGroup.IsGangSatisfied() && subGroup.GetName() != podgroup_info.DefaultSubGroup {
+			subGroupMessages += fmt.Sprintf(", subGroup %s minMember is %d and %d pods are active",
+				subGroup.GetName(), minAvailable, activeTasks)
+		}
+	}
+
+	message := fmt.Sprintf("Job is stale. %d pods are active, minMember is %d", totalActivePods, totalMinAvailable) + subGroupMessages
+
+	su.recorder.Eventf(job.PodGroup, v1.EventTypeNormal, "StaleJob", message)
 }
 
 func (su *defaultStatusUpdater) recordJobNotReadyEvent(job *podgroup_info.PodGroupInfo) {
-	message := "Job is not ready for scheduling."
-	if len(job.SubGroups) == 0 {
-		message = message + fmt.Sprintf(" Waiting for %d pods, currently %d exist, %d are gated",
-			job.MinAvailable, job.GetNumAliveTasks(), job.GetNumGatedTasks())
-	} else {
-		for _, subGroup := range job.SubGroups {
-			if !subGroup.IsReadyForScheduling() {
+	message := fmt.Sprintf("Job is not ready for scheduling.")
+	for _, subGroup := range job.GetSubGroups() {
+		if !subGroup.IsReadyForScheduling() {
+			if subGroup.GetName() == podgroup_info.DefaultSubGroup {
+				message = message + fmt.Sprintf(" Waiting for %d pods, currently %d exist, %d are gated",
+					subGroup.GetMinAvailable(), subGroup.GetNumAliveTasks(), subGroup.GetNumGatedTasks())
+			} else {
 				message += fmt.Sprintf(" Waiting for %d pods for SubGroup %s, currently %d exist, %d are gated.",
 					subGroup.GetMinAvailable(), subGroup.GetName(), subGroup.GetNumAliveTasks(), subGroup.GetNumGatedTasks())
 			}

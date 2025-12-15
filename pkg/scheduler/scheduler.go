@@ -20,82 +20,92 @@ limitations under the License.
 package scheduler
 
 import (
+	"fmt"
+	"math/rand"
 	"net/http"
 	"time"
 
-	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
 	kubeaischedulerver "github.com/NVIDIA/KAI-scheduler/pkg/apis/client/clientset/versioned"
-	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/actions"
 	schedcache "github.com/NVIDIA/KAI-scheduler/pkg/scheduler/cache"
+	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/cache/usagedb"
+	api "github.com/NVIDIA/KAI-scheduler/pkg/scheduler/cache/usagedb/api"
+	usagedbapi "github.com/NVIDIA/KAI-scheduler/pkg/scheduler/cache/usagedb/api"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/conf"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/conf_util"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/framework"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/log"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/metrics"
-	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/plugins"
 
 	kueue "sigs.k8s.io/kueue/client-go/clientset/versioned"
 )
 
 type Scheduler struct {
-	cache             schedcache.Cache
-	config            *conf.SchedulerConfiguration
-	schedulerParams   *conf.SchedulerParams
-	schedulerConfPath string
-	schedulePeriod    time.Duration
-	mux               *http.ServeMux
+	cache           schedcache.Cache
+	config          *conf.SchedulerConfiguration
+	schedulerParams *conf.SchedulerParams
+	schedulePeriod  time.Duration
+	mux             *http.ServeMux
 }
 
 func NewScheduler(
 	config *rest.Config,
-	schedulerConfPath string,
+	schedulerConf *conf.SchedulerConfiguration,
 	schedulerParams *conf.SchedulerParams,
 	mux *http.ServeMux,
 ) (*Scheduler, error) {
 	kubeClient, kubeAiSchedulerClient, kueueClient := newClients(config)
+
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to create discovery client: %v", err)
+	}
+
+	usageDBClient, err := getUsageDBClient(schedulerConf.UsageDBConfig)
+	if err != nil {
+		return nil, fmt.Errorf("error getting usage db client: %v", err)
+	}
+
+	var usageDBParams *api.UsageParams
+	if schedulerConf.UsageDBConfig != nil {
+		usageDBParams = schedulerConf.UsageDBConfig.GetUsageParams()
+	}
+
 	schedulerCacheParams := &schedcache.SchedulerCacheParams{
 		KubeClient:                  kubeClient,
 		KAISchedulerClient:          kubeAiSchedulerClient,
 		KueueClient:                 kueueClient,
+		UsageDBParams:               usageDBParams,
+		UsageDBClient:               usageDBClient,
 		SchedulerName:               schedulerParams.SchedulerName,
 		NodePoolParams:              schedulerParams.PartitionParams,
 		RestrictNodeScheduling:      schedulerParams.RestrictSchedulingNodes,
 		DetailedFitErrors:           schedulerParams.DetailedFitErrors,
 		ScheduleCSIStorage:          schedulerParams.ScheduleCSIStorage,
 		FullHierarchyFairness:       schedulerParams.FullHierarchyFairness,
-		NodeLevelScheduler:          schedulerParams.NodeLevelScheduler,
 		NumOfStatusRecordingWorkers: schedulerParams.NumOfStatusRecordingWorkers,
+		UpdatePodEvictionCondition:  schedulerParams.UpdatePodEvictionCondition,
+		DiscoveryClient:             discoveryClient,
 	}
 
 	scheduler := &Scheduler{
-		schedulerParams:   schedulerParams,
-		schedulerConfPath: schedulerConfPath,
-		cache:             schedcache.New(schedulerCacheParams),
-		schedulePeriod:    schedulerParams.SchedulePeriod,
-		mux:               mux,
+		config:          schedulerConf,
+		schedulerParams: schedulerParams,
+		cache:           schedcache.New(schedulerCacheParams),
+		schedulePeriod:  schedulerParams.SchedulePeriod,
+		mux:             mux,
 	}
-
-	actions.InitDefaultActions()
-	plugins.InitDefaultPlugins()
 
 	return scheduler, nil
 }
 
 func (s *Scheduler) Run(stopCh <-chan struct{}) {
-	var err error
-
 	s.cache.Run(stopCh)
 	s.cache.WaitForCacheSync(stopCh)
-
-	// Load configuration of scheduler
-	s.config, err = conf_util.ResolveConfigurationFromFile(s.schedulerConfPath)
-	if err != nil {
-		panic(err)
-	}
 
 	go func() {
 		wait.Until(s.runOnce, s.schedulePeriod, stopCh)
@@ -103,7 +113,7 @@ func (s *Scheduler) Run(stopCh <-chan struct{}) {
 }
 
 func (s *Scheduler) runOnce() {
-	sessionId := uuid.NewUUID()
+	sessionId := generateSessionID(6)
 	log.InfraLogger.SetSessionID(string(sessionId))
 
 	log.InfraLogger.V(1).Infof("Start scheduling ...")
@@ -137,4 +147,21 @@ func newClients(config *rest.Config) (kubernetes.Interface, kubeaischedulerver.I
 	k8cClientConfig.AcceptContentTypes = "application/vnd.kubernetes.protobuf"
 	k8cClientConfig.ContentType = "application/vnd.kubernetes.protobuf"
 	return kubernetes.NewForConfigOrDie(k8cClientConfig), kubeaischedulerver.NewForConfigOrDie(config), kueue.NewForConfigOrDie(config)
+}
+
+func getUsageDBClient(dbConfig *usagedbapi.UsageDBConfig) (usagedbapi.Interface, error) {
+	resolver := usagedb.NewClientResolver(nil)
+	return resolver.GetClient(dbConfig)
+}
+
+func generateSessionID(l int) string {
+	str := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	bytes := []byte(str)
+	var result []byte
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	for range l {
+		result = append(result, bytes[r.Intn(len(bytes))])
+	}
+
+	return string(result)
 }
