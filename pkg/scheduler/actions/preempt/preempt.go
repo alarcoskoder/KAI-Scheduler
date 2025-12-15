@@ -147,7 +147,7 @@ func buildFilterFuncForPreempt(ssn *framework.Session, preemptor *podgroup_info.
 
 		// Only consider tasks that are *actually evictable* by the solver:
 		potentialVictimTasks, _ := podgroup_info.GetTasksToEvict(
-			job, ssn.SubGroupOrderFn, ssn.TaskOrderFn,
+			job, ssn.PodSetOrderFn, ssn.TaskOrderFn,
 		)
 		// If all potential victims are protected, skip this job entirely.
 		hasPreemptibleVictim := false
