@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 global:
-  registry: registry/local/kai-scheduler
-  tag: ""
+  registry: harbor.aimotive.com/lali-scheduler
+  tag: "0.0.7"
   imagePullPolicy: IfNotPresent
   securityContext: {}
   imagePullSecrets: []
-  leaderElection: false
+  leaderElection: true
   gpuSharing: false
   clusterAutoscaling: false
   nodeSelector: {}
@@ -26,7 +26,7 @@ operator:
     name: operator
     pullPolicy: IfNotPresent
     # tag: ""  # Optional: Override global.tag or Chart.AppVersion
-  replicaCount: 1
+  replicaCount: 3
   metricsBindAddress: ":8080"
   probeBindAddress: ":8081"
   qps: 50
@@ -129,7 +129,7 @@ postCleanup:
   serviceAccountName: post-delete-cleanup
 
 defaultQueue:
-  createDefaultQueue: true
+  createDefaultQueue: false
   parentName: default-parent-queue
   childName: default-queue
   parentResources:
