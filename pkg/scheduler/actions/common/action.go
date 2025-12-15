@@ -6,7 +6,7 @@ package common
 import (
 	"fmt"
 	"k8s.io/apimachinery/pkg/types"
-
+	"k8s.io/klog/v2"
 
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/actions/utils"
 	"github.com/NVIDIA/KAI-scheduler/pkg/scheduler/api/common_info"
